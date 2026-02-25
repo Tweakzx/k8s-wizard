@@ -42,6 +42,25 @@
 | K8s | client-go |
 | LLM | GLM, DeepSeek, Claude |
 
+## 架构设计
+
+K8s Wizard 采用分层架构设计，核心组件包括：
+
+- **意图理解层** - LLM 解析自然语言，提取操作意图
+- **安全层** - 风险评估、权限检查、操作确认
+- **执行层** - client-go 调用 K8s API
+- **结果层** - 格式化输出、错误处理
+
+```
+用户输入 → 意图解析 → 风险评估 → 执行操作 → 返回结果
+              ↓
+         需要澄清? → 生成表单 → 用户填写
+              ↓
+         危险操作? → 预览确认 → 用户确认
+```
+
+> 详细架构设计请参考 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 ## 快速开始
 
 ### 前置要求
@@ -145,9 +164,9 @@ k8s-wizard/
 │   └── package.json
 │
 ├── docs/                     # 文档
-│   ├── LLM_SETUP.md          # LLM 配置指南
-│   └── ROADMAP.md            # 开发路线图
-│
+│   ├── ARCHITECTURE.md      # 架构设计
+│   ├── LLM_SETUP.md         # LLM 配置指南
+│   └── ROADMAP.md           # 开发路线图
 ├── Makefile
 └── go.mod
 ```
