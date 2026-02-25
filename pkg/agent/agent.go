@@ -195,11 +195,13 @@ func (c *ConfiguredLLMClient) chatOpenAIFormat(ctx context.Context, prompt strin
 
 // K8sAction 表示一个 K8s 操作
 type K8sAction struct {
-	Action    string                 `json:"action"`
-	Resource  string                 `json:"resource"`
-	Name      string                 `json:"name"`
-	Namespace string                 `json:"namespace"`
-	Params    map[string]interface{} `json:"params"`
+	Action         string                 `json:"action"`
+	Resource       string                 `json:"resource"`
+	Name           string                 `json:"name"`
+	Namespace      string                 `json:"namespace"`
+	Params         map[string]interface{} `json:"params"`
+	IsK8sOperation bool                   `json:"is_k8s_operation"`
+	Reply          string                 `json:"reply"`
 }
 
 // Agent 是主控制器
@@ -318,26 +320,51 @@ func (a *Agent) ProcessCommandWithClarification(ctx context.Context, userMsg str
 	if err != nil {
 		return "", nil, nil, err
 	}
+	fmt.Printf("🔍 LLM 解析结果: action=%s, resource=%s, name=%s, isK8s=%v\n", action.Action, action.Resource, action.Name, action.IsK8sOperation)
 
-	// 2. 如果有表单数据，先合并到 action
-	if formData != nil {
-		a.MergeFormData(action, formData)
+	// 2. 如果不是 K8s 操作，直接返回 AI 的回复
+	if !action.IsK8sOperation {
+		return action.Reply, nil, nil, nil
 	}
 
-	// 3. 检查是否需要澄清（合并后再检查）
-	if clarReq, needsInfo := a.CheckNeedsClarification(action); needsInfo {
+	// 3. 如果有表单数据，先合并到 action
+	if formData != nil {
+		a.MergeFormData(action, formData)
+		fmt.Printf("🔍 合并 formData 后: name=%s, image=%v, replicas=%v\n", action.Name, action.Params["image"], action.Params["replicas"])
+	}
+
+	// 4. 检查是否需要澄清（合并后再检查）
+	clarReq, needsInfo := a.CheckNeedsClarification(action)
+	fmt.Printf("🔍 检查澄清: needsInfo=%v\n", needsInfo)
+	if needsInfo {
 		return "", clarReq, nil, nil
 	}
 
-	// 4. 生成操作预览
+	// 5. 生成操作预览
 	preview := a.GenerateActionPreview(action)
+	fmt.Printf("🔍 操作预览: %v\n", preview != nil)
 
-	// 5. 如果未确认，返回预览等待确认
+	// 如果无法生成预览，说明操作无效或不支持
+	if preview == nil {
+		return fmt.Sprintf("❓ 抱歉，暂不支持此操作。\n\n**支持的操作:**\n• 部署应用: 部署一个 nginx\n• 查看资源: 查看所有 pod/deployment/service\n• 扩缩容: 把 nginx 扩容到 5 个\n• 删除资源: 删除名为 xxx 的 deployment\n\n**支持的资源:**\n• pod, deployment, service, configmap, secret, ingress, pvc, namespace"), nil, nil, nil
+	}
+
+	// 6. 对于 get 操作（查看），直接执行不需要确认
+	if action.Action == "get" || action.Action == "list" || action.Action == "show" {
+		result, err = a.executeAction(ctx, *action)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		return result, nil, nil, nil
+	}
+
+	// 7. 如果未确认，返回预览等待确认
+	fmt.Printf("🔍 confirm 参数: %v\n", confirm)
 	if confirm == nil || !*confirm {
 		return "请确认以下操作：", nil, preview, nil
 	}
 
-	// 6. 执行操作
+	// 8. 执行操作
 	result, err = a.executeAction(ctx, *action)
 	if err != nil {
 		return "", nil, nil, err
@@ -426,7 +453,9 @@ func (a *Agent) ProcessCommand(ctx context.Context, userMsg string) (string, err
 // executeAction 执行具体的 K8s 操作
 func (a *Agent) executeAction(ctx context.Context, action K8sAction) (string, error) {
 	namespace := action.Namespace
-	if namespace == "" {
+	// 对于非查看操作，空命名空间默认为 default
+	// 对于查看操作，空命名空间表示查询所有命名空间
+	if namespace == "" && action.Action != "get" && action.Action != "list" && action.Action != "show" {
 		namespace = "default"
 	}
 
@@ -500,6 +529,9 @@ func (a *Agent) createDeployment(ctx context.Context, namespace string, action K
 
 // getResources 获取资源
 func (a *Agent) getResources(ctx context.Context, namespace string, action K8sAction) (string, error) {
+	// 判断是否查询所有命名空间
+	allNamespaces := namespace == ""
+
 	switch action.Resource {
 	case "pod":
 		pods, err := a.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
@@ -507,49 +539,191 @@ func (a *Agent) getResources(ctx context.Context, namespace string, action K8sAc
 			return "", fmt.Errorf("获取 pod 列表失败: %w", err)
 		}
 		if len(pods.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 Pod", nil
+			}
 			return fmt.Sprintf("命名空间 %s 中没有 Pod", namespace), nil
 		}
-		result := fmt.Sprintf("📦 命名空间 %s 中的 Pod (共 %d 个):\n", namespace, len(pods.Items))
+		result := fmt.Sprintf("📦 集群中的 Pod (共 %d 个):\n", len(pods.Items))
 		for _, pod := range pods.Items {
 			age := pod.CreationTimestamp.Format("2006-01-02 15:04")
-			result += fmt.Sprintf("  • %s (%s) - 年龄: %s\n", pod.Name, pod.Status.Phase, age)
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (%s) - %s\n", pod.Namespace, pod.Name, pod.Status.Phase, age)
+			} else {
+				result += fmt.Sprintf("  • %s (%s) - %s\n", pod.Name, pod.Status.Phase, age)
+			}
 		}
 		return result, nil
-	case "deployment":
+
+	case "deployment", "deploy":
 		deps, err := a.client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return "", fmt.Errorf("获取 deployment 列表失败: %w", err)
 		}
 		if len(deps.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 Deployment", nil
+			}
 			return fmt.Sprintf("命名空间 %s 中没有 Deployment", namespace), nil
 		}
-		result := fmt.Sprintf("🚀 命名空间 %s 中的 Deployment (共 %d 个):\n", namespace, len(deps.Items))
+		result := fmt.Sprintf("🚀 集群中的 Deployment (共 %d 个):\n", len(deps.Items))
 		for _, dep := range deps.Items {
-			result += fmt.Sprintf("  • %s (副本: %d/%d)\n", dep.Name, dep.Status.ReadyReplicas, dep.Status.Replicas)
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (副本: %d/%d)\n", dep.Namespace, dep.Name, dep.Status.ReadyReplicas, dep.Status.Replicas)
+			} else {
+				result += fmt.Sprintf("  • %s (副本: %d/%d)\n", dep.Name, dep.Status.ReadyReplicas, dep.Status.Replicas)
+			}
 		}
 		return result, nil
-	case "service":
+
+	case "service", "svc":
 		svcs, err := a.client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return "", fmt.Errorf("获取 service 列表失败: %w", err)
 		}
 		if len(svcs.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 Service", nil
+			}
 			return fmt.Sprintf("命名空间 %s 中没有 Service", namespace), nil
 		}
-		result := fmt.Sprintf("🔗 命名空间 %s 中的 Service (共 %d 个):\n", namespace, len(svcs.Items))
+		result := fmt.Sprintf("🔗 集群中的 Service (共 %d 个):\n", len(svcs.Items))
 		for _, svc := range svcs.Items {
+			port := "-"
 			if len(svc.Spec.Ports) > 0 {
-				result += fmt.Sprintf("  • %s (类型: %s, 端口: %d)\n", svc.Name, svc.Spec.Type, svc.Spec.Ports[0].Port)
+				port = fmt.Sprintf("%d", svc.Spec.Ports[0].Port)
+			}
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (类型: %s, 端口: %s)\n", svc.Namespace, svc.Name, svc.Spec.Type, port)
 			} else {
-				result += fmt.Sprintf("  • %s (类型: %s)\n", svc.Name, svc.Spec.Type)
+				result += fmt.Sprintf("  • %s (类型: %s, 端口: %s)\n", svc.Name, svc.Spec.Type, port)
 			}
 		}
 		return result, nil
+
+	case "configmap", "cm":
+		cms, err := a.client.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("获取 configmap 列表失败: %w", err)
+		}
+		if len(cms.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 ConfigMap", nil
+			}
+			return fmt.Sprintf("命名空间 %s 中没有 ConfigMap", namespace), nil
+		}
+		result := fmt.Sprintf("📋 集群中的 ConfigMap (共 %d 个):\n", len(cms.Items))
+		for _, cm := range cms.Items {
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (%d 个键)\n", cm.Namespace, cm.Name, len(cm.Data))
+			} else {
+				result += fmt.Sprintf("  • %s (%d 个键)\n", cm.Name, len(cm.Data))
+			}
+		}
+		return result, nil
+
+	case "secret":
+		secrets, err := a.client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("获取 secret 列表失败: %w", err)
+		}
+		if len(secrets.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 Secret", nil
+			}
+			return fmt.Sprintf("命名空间 %s 中没有 Secret", namespace), nil
+		}
+		result := fmt.Sprintf("🔒 集群中的 Secret (共 %d 个):\n", len(secrets.Items))
+		for _, secret := range secrets.Items {
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (类型: %s)\n", secret.Namespace, secret.Name, secret.Type)
+			} else {
+				result += fmt.Sprintf("  • %s (类型: %s)\n", secret.Name, secret.Type)
+			}
+		}
+		return result, nil
+
+	case "ingress":
+		ingresses, err := a.client.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("获取 ingress 列表失败: %w", err)
+		}
+		if len(ingresses.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 Ingress", nil
+			}
+			return fmt.Sprintf("命名空间 %s 中没有 Ingress", namespace), nil
+		}
+		result := fmt.Sprintf("🌐 集群中的 Ingress (共 %d 个):\n", len(ingresses.Items))
+		for _, ing := range ingresses.Items {
+			host := "-"
+			if len(ing.Spec.Rules) > 0 && ing.Spec.Rules[0].Host != "" {
+				host = ing.Spec.Rules[0].Host
+			}
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (主机: %s)\n", ing.Namespace, ing.Name, host)
+			} else {
+				result += fmt.Sprintf("  • %s (主机: %s)\n", ing.Name, host)
+			}
+		}
+		return result, nil
+
+	case "pvc", "persistentvolumeclaim":
+		pvcs, err := a.client.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("获取 pvc 列表失败: %w", err)
+		}
+		if len(pvcs.Items) == 0 {
+			if allNamespaces {
+				return "集群中没有 PVC", nil
+			}
+			return fmt.Sprintf("命名空间 %s 中没有 PVC", namespace), nil
+		}
+		result := fmt.Sprintf("💾 集群中的 PVC (共 %d 个):\n", len(pvcs.Items))
+		for _, pvc := range pvcs.Items {
+			if allNamespaces {
+				result += fmt.Sprintf("  • [%s] %s (状态: %s, 大小: %s)\n", pvc.Namespace, pvc.Name, pvc.Status.Phase, pvc.Spec.Resources.Requests.Storage())
+			} else {
+				result += fmt.Sprintf("  • %s (状态: %s, 大小: %s)\n", pvc.Name, pvc.Status.Phase, pvc.Spec.Resources.Requests.Storage())
+			}
+		}
+		return result, nil
+
+	case "namespace", "namespaces", "ns":
+		nss, err := a.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("获取 namespace 列表失败: %w", err)
+		}
+		result := fmt.Sprintf("📁 集群中的 Namespace (共 %d 个):\n", len(nss.Items))
+		for _, ns := range nss.Items {
+			result += fmt.Sprintf("  • %s (状态: %s)\n", ns.Name, ns.Status.Phase)
+		}
+		return result, nil
+
+	case "node", "nodes":
+		nodes, err := a.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("获取 node 列表失败: %w", err)
+		}
+		result := fmt.Sprintf("🖥️ 集群中的 Node (共 %d 个):\n", len(nodes.Items))
+		for _, node := range nodes.Items {
+			ready := "NotReady"
+			for _, cond := range node.Status.Conditions {
+				if cond.Type == "Ready" {
+					if cond.Status == "True" {
+						ready = "Ready"
+					}
+					break
+				}
+			}
+			result += fmt.Sprintf("  • %s (%s)\n", node.Name, ready)
+		}
+		return result, nil
+
 	default:
-		return "", fmt.Errorf("不支持的资源类型: %s", action.Resource)
+		return "", fmt.Errorf("不支持的资源类型: %s。支持的资源: pod, deployment, service, configmap, secret, ingress, pvc, namespace, node", action.Resource)
 	}
 }
-
 // scaleDeployment 扩缩容 Deployment
 func (a *Agent) scaleDeployment(ctx context.Context, namespace string, action K8sAction) (string, error) {
 	replicas := int32(1)

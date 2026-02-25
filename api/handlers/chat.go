@@ -30,7 +30,7 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 		return
 	}
 
-	log.Printf("📨 收到聊天请求: %s", req.Content)
+    log.Printf("📨 收到聊天请求: %s, formData: %v, confirm: %v", req.Content, req.FormData, req.Confirm)
 
 	// 设置超时上下文
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)

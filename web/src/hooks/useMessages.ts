@@ -60,5 +60,10 @@ export function useMessages() {
     );
   };
 
-  return { messages, addMessage, updateMessage };
+  const clearMessages = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    loadDefaultMessages();
+  };
+
+  return { messages, addMessage, updateMessage, clearMessages };
 }

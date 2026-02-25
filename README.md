@@ -1,274 +1,316 @@
-# K8s Wizard 🧙
+# K8s Wizard
 
 通过自然语言管理 Kubernetes 集群的 AI 助手。
 
-## 项目价值
+## 特性
 
-- 🎯 **降低使用门槛** - 无需学习复杂的 kubectl 命令，支持自然语言（中文/英文）
-- 🤖 **AI 驱动** - 支持多种 LLM 模型（GLM、DeepSeek、Claude）
-- 📱 **统一架构** - 前后端整合在同一项目中
-- ⚡ **核心功能** - 部署、查看、扩缩容、删除等 K8s 操作
-- ⚙️ **灵活配置** - 支持 JSON 配置文件和环境变量
+- **自然语言交互** - 用中文或英文描述你想要做的事情，无需记忆 kubectl 命令
+- **智能澄清** - 当信息不足时，自动生成表单收集必要信息
+- **操作预览** - 执行前预览 YAML 配置，确认后再执行
+- **动态模型切换** - 前端实时切换 LLM 模型（GLM、DeepSeek、Claude）
+- **安全确认** - 危险操作（如删除）需要明确确认
+
+## 截图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  K8s Wizard                              [glm/glm-4-flash ▼]│
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  用户: 部署一个 nginx 应用                                   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  📦 创建 Deployment                                   │   │
+│  │                                                       │   │
+│  │  应用名称: [nginx        ]                            │   │
+│  │  镜像地址: [nginx:latest ]                            │   │
+│  │  副本数:   [  1  ] [-][+]                             │   │
+│  │  命名空间: [default     ]                             │   │
+│  │                                                       │   │
+│  │                          [取消] [确认]                │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 技术栈
 
-### 前端
-- React 18 + TypeScript
-- Vite
-- Tailwind CSS
-
-### 后端
-- Go 1.24
-- Gin Web 框架
-- client-go (Kubernetes Go 客户端)
-
-## 配置系统（参考 OpenClaw）
-
-K8s Wizard 采用类似 OpenClaw 的配置系统，支持通过 JSON 配置文件或环境变量管理模型设置。
-
-### 配置文件位置
-
-默认配置文件位置（按优先级排序）：
-1. `~/.config/k8s-wizard/config.json` (XDG 标准位置)
-2. `~/.k8s-wizard/config.json` (传统位置)
-
-### 配置文件示例
-
-```json
-{
-  "meta": {
-    "version": "1.0.0"
-  },
-  "models": {
-    "mode": "merge",
-    "providers": {
-      "glm": {
-        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
-        "auth": "api-key",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "glm-4-flash",
-            "name": "GLM-4 Flash",
-            "reasoning": true,
-            "contextWindow": 128000,
-            "maxTokens": 131072
-          }
-        ]
-      }
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "glm/glm-4-flash"
-      }
-    }
-  },
-  "api": {
-    "port": 8080,
-    "host": "0.0.0.0"
-  }
-}
-```
-
-### 模型字符串格式
-
-模型采用 `provider/model-id` 格式：
-- `glm/glm-4-flash` - GLM-4 Flash
-- `deepseek/deepseek-chat` - DeepSeek Chat
-- `claude/claude-sonnet-4-20250514` - Claude Sonnet 4
-
-### 环境变量
-
-环境变量可以覆盖配置文件中的设置：
-
-| 变量 | 说明 |
+| 层级 | 技术 |
 |------|------|
-| `GLM_API_KEY` | GLM API Key |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key |
-| `ANTHROPIC_API_KEY` | Claude API Key |
-| `K8S_WIZARD_MODEL` | 覆盖默认模型（如 `deepseek/deepseek-chat`）|
-| `PORT` | API 服务端口（默认 8080）|
-| `KUBECONFIG` | K8s 配置文件路径 |
+| 前端 | React 18, TypeScript, Vite, Tailwind CSS |
+| 后端 | Go 1.24, Gin |
+| K8s | client-go |
+| LLM | GLM, DeepSeek, Claude |
 
 ## 快速开始
 
 ### 前置要求
 
 - Go 1.24+
-- Node.js 18+ (用于前端开发)
-- Kubernetes 集群
-- LLM API Key（GLM、DeepSeek 或 Claude）
+- Node.js 18+
+- Kubernetes 集群（或 kubectl 配置）
+- LLM API Key（GLM / DeepSeek / Claude 任选）
 
-### 1. 克隆项目
+### 1. 获取代码
 
 ```bash
-cd /home/shawn/github/agents-workplace/k8s-wizard
+git clone https://github.com/your-org/k8s-wizard.git
+cd k8s-wizard
 ```
 
-### 2. 配置 API Key（选择一个）
+### 2. 配置 API Key
 
-**方式 1：环境变量（推荐）**
+**方式一：环境变量（推荐）**
 
 ```bash
-# GLM (智谱）- 国内 API，速度快
+# GLM（推荐国内用户）
 export GLM_API_KEY=your-glm-api-key
 
-# 或 DeepSeek - 国内 API，性价比高
+# 或 DeepSeek
 export DEEPSEEK_API_KEY=your-deepseek-api-key
 
-# 或 Claude - 需要科学上网
+# 或 Claude（需要科学上网）
 export ANTHROPIC_API_KEY=your-anthropic-api-key
 ```
 
-**方式 2：凭证文件**
+**方式二：凭证文件**
 
-创建 `~/.k8s-wizard/credentials.json`:
+创建 `~/.k8s-wizard/credentials.json`：
+
 ```json
 {
   "profiles": {
     "glm:default": {
       "apiKey": "your-glm-api-key"
-    },
-    "deepseek:default": {
-      "apiKey": "your-deepseek-api-key"
-    },
-    "claude:default": {
-      "apiKey": "your-anthropic-api-key"
     }
   }
 }
 ```
 
-### 3. 安装依赖
+> 详细配置请参考 [docs/LLM_SETUP.md](docs/LLM_SETUP.md)
+
+### 3. 启动服务
 
 ```bash
-make install
-```
-
-### 4. 运行开发服务器
-
-```bash
-# 同时启动前后端（推荐）
+# 安装依赖并启动（前后端同时启动）
 make dev
-
-# 或分别启动
-make dev:api  # 后端: http://localhost:8080
-make dev:web  # 前端: http://localhost:5173
 ```
 
-访问 http://localhost:5173
+- 前端: http://localhost:5173
+- 后端: http://localhost:8080
+
+### 4. 使用
+
+打开浏览器访问 http://localhost:5173，输入自然语言指令：
+
+- "部署一个 nginx 应用"
+- "查看所有 pod"
+- "把 nginx 扩容到 5 个副本"
+- "删除 test 命名空间下的 deployment"
 
 ## 项目结构
 
 ```
 k8s-wizard/
-├── api/                  # 后端 API (Go)
-│   ├── main.go          # API 入口
-│   ├── handlers/        # 请求处理器
-│   │   ├── chat.go    # 聊天处理
-│   │   ├── health.go   # 健康检查
-│   │   ├── resources.go # 资源获取
-│   │   └── config.go  # 配置信息
-│   ├── middleware/      # 中间件
-│   │   └── cors.go    # CORS 配置
-│   └── models/         # 数据模型
-│       └── requests.go # 请求/响应模型
+├── api/                      # 后端 API
+│   ├── main.go               # 入口
+│   ├── handlers/             # 请求处理器
+│   │   ├── chat.go           # 聊天 + 澄清流程
+│   │   ├── config.go         # 模型配置/切换
+│   │   ├── resources.go      # K8s 资源查询
+│   │   └── health.go         # 健康检查
+│   ├── middleware/           # 中间件
+│   │   └── cors.go
+│   └── models/               # 数据模型
+│       └── requests.go
 │
-├── web/                  # 前端 React
-│   ├── src/
-│   │   ├── components/   # UI 组件
-│   │   ├── pages/        # 页面
-│   │   ├── services/     # API 服务
-│   │   ├── hooks/        # React Hooks
-│   │   └── types/        # TypeScript 类型
-│   └── package.json
-│
-├── pkg/                  # 共享包
-│   ├── agent/           # Agent 核心逻辑
-│   │   └── agent.go
-│   └── config/          # 配置管理
+├── pkg/                      # 核心包
+│   ├── agent/                # Agent 逻辑
+│   │   ├── agent.go          # LLM 交互
+│   │   └── clarify.go        # 澄清 + 预览
+│   └── config/               # 配置管理
 │       └── config.go
 │
-├── Makefile            # 构建脚本
-├── go.mod             # Go 模块配置
-└── README.md          # 项目文档
+├── web/                      # 前端
+│   ├── src/
+│   │   ├── components/       # UI 组件
+│   │   │   ├── ActionForm.tsx    # 动态表单
+│   │   │   ├── ActionPreview.tsx # YAML 预览
+│   │   │   ├── ModelSelector.tsx # 模型切换
+│   │   │   └── ...
+│   │   ├── pages/
+│   │   ├── hooks/
+│   │   ├── services/
+│   │   └── types/
+│   └── package.json
+│
+├── docs/                     # 文档
+│   ├── LLM_SETUP.md          # LLM 配置指南
+│   └── ROADMAP.md            # 开发路线图
+│
+├── Makefile
+└── go.mod
 ```
 
 ## API 端点
 
 | 方法 | 路径 | 说明 |
-|------|-------|------|
+|------|------|------|
 | GET | `/health` | 健康检查 |
-| POST | `/api/chat` | 聊天接口 |
-| GET | `/api/resources` | 获取资源列表 |
-| GET | `/api/config/model` | 获取当前模型信息 |
+| POST | `/api/chat` | 聊天接口（支持澄清流程） |
+| GET | `/api/resources` | 获取 K8s 资源列表 |
+| GET | `/api/config/model` | 获取当前模型和可用模型 |
+| PUT | `/api/config/model` | 切换模型 |
 | GET | `/api/config` | 获取完整配置 |
 
-## 使用示例
-
-### 通过 Web UI
-
-1. 在输入框输入自然语言指令
-2. 例如："部署一个 nginx"
-3. 查看返回的执行结果
-
-### 支持的操作
-
-| 操作类型 | 示例指令 |
-|---------|---------|
-| 部署 | "部署一个 nginx"、"创建一个 redis" |
-| 查看 | "查看所有 pod"、"显示所有 deployment" |
-| 扩缩容 | "扩容到 5 个副本"、"缩容到 2 个副本" |
-| 删除 | "删除名为 test 的 pod"、"移除 nginx" |
-
-## 可用命令
+### 聊天接口示例
 
 ```bash
-make dev          # 同时启动前后端
-make dev:api     # 仅启动后端
-make dev:web     # 仅启动前端
-make build       # 构建前后端
-make build:api   # 仅构建后端
-make build:web   # 仅构建前端
-make clean       # 清理构建产物
-make install     # 安装所有依赖
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"content": "部署一个 nginx"}'
 ```
+
+**响应（需要澄清）**：
+
+```json
+{
+  "status": "needs_info",
+  "clarification": {
+    "type": "form",
+    "title": "📦 创建 Deployment",
+    "fields": [
+      {"key": "name", "label": "应用名称", "type": "text", "required": true},
+      {"key": "image", "label": "镜像地址", "type": "text", "required": true},
+      {"key": "replicas", "label": "副本数", "type": "number", "default": 1}
+    ]
+  }
+}
+```
+
+**响应（需要确认）**：
+
+```json
+{
+  "status": "needs_confirm",
+  "actionPreview": {
+    "type": "create",
+    "resource": "deployment/nginx",
+    "yaml": "apiVersion: apps/v1\nkind: Deployment\n...",
+    "dangerLevel": "low",
+    "summary": "创建 Deployment nginx (副本: 1, 镜像: nginx:latest)"
+  }
+}
+```
+
+## 支持的操作
+
+| 操作 | 示例指令 |
+|------|---------|
+| 部署 | "部署一个 nginx"、"创建 redis 应用" |
+| 查看 | "查看所有 pod"、"显示 deployment 列表" |
+| 扩缩容 | "扩容到 5 个副本"、"nginx 缩容到 2" |
+| 删除 | "删除 nginx deployment"、"移除 test pod" |
+
+## 配置
+
+### 配置文件位置
+
+按优先级排序：
+
+1. `~/.config/k8s-wizard/config.json` (XDG 标准)
+2. `~/.k8s-wizard/config.json`
+
+### 配置示例
+
+```json
+{
+  "meta": {"version": "1.0.0"},
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "glm": {
+        "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [{"id": "glm-4-flash", "name": "GLM-4 Flash"}]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {"model": {"primary": "glm/glm-4-flash"}}
+  },
+  "api": {"port": 8080, "host": "0.0.0.0"}
+}
+```
+
+### 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `GLM_API_KEY` | GLM API Key |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key |
+| `ANTHROPIC_API_KEY` | Claude API Key |
+| `K8S_WIZARD_MODEL` | 覆盖默认模型 |
+| `PORT` | API 端口（默认 8080） |
+| `KUBECONFIG` | K8s 配置路径 |
+
+## 命令
+
+```bash
+make dev          # 启动开发服务器（前后端）
+make dev:api      # 仅启动后端
+make dev:web      # 仅启动前端
+make build        # 构建生产版本
+make build:api    # 仅构建后端
+make build:web    # 仅构建前端
+make run          # 构建并运行后端
+make clean        # 清理构建产物
+make install      # 安装依赖
+make test         # 运行测试
+make lint         # 代码检查
+```
+
+## 支持的 LLM
+
+| 提供商 | 环境变量 | 获取地址 |
+|--------|----------|----------|
+| GLM (智谱) | `GLM_API_KEY` | https://open.bigmodel.cn/ |
+| DeepSeek | `DEEPSEEK_API_KEY` | https://platform.deepseek.com/ |
+| Claude | `ANTHROPIC_API_KEY` | https://console.anthropic.com/ |
+
+> 详细配置请参考 [docs/LLM_SETUP.md](docs/LLM_SETUP.md)
 
 ## 故障排查
 
 ### 后端无法启动
 
-确保设置了 API Key 环境变量或创建了凭证文件：
+确保设置了 API Key：
+
 ```bash
 export GLM_API_KEY=your-api-key
+make dev:api
 ```
 
 ### 前端显示"未连接"
 
-检查后端服务是否正常运行在 http://localhost:8080
+检查后端是否运行在 http://localhost:8080
 
-### 切换模型
+### 模型列表为空
 
-修改 `~/.k8s-wizard/config.json` 中的 `agents.defaults.model.primary` 字段：
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "deepseek/deepseek-chat"
-      }
-    }
-  }
-}
-```
+确保配置了对应提供商的 API Key，只有配置了 Key 的提供商才会显示模型。
 
-或使用环境变量临时覆盖：
-```bash
-export K8S_WIZARD_MODEL="deepseek/deepseek-chat"
-make dev:api
-```
+## 开发路线图
+
+详见 [docs/ROADMAP.md](docs/ROADMAP.md)
+
+- [x] 自然语言解析
+- [x] 智能澄清流程
+- [x] 动态模型切换
+- [x] YAML 预览确认
+- [ ] 多轮会话支持
+- [ ] 流式响应
+- [ ] 更多 K8s 资源
 
 ## 许可证
 

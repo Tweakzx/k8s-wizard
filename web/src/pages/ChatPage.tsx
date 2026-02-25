@@ -12,7 +12,8 @@ export const ChatPage: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pendingContent, setPendingContent] = useState<string>('');
-  const { messages, addMessage, updateMessage } = useMessages();
+  const [pendingFormData, setPendingFormData] = useState<Record<string, any> | undefined>();
+  const { messages, addMessage, updateMessage, clearMessages } = useMessages();
   const connected = useConnectionStatus();
 
   const navItems: NavItem[] = [
@@ -33,6 +34,7 @@ export const ChatPage: React.FC = () => {
 
   const sendMessage = async (content: string, formData?: Record<string, any>, confirm?: boolean) => {
     setLoading(true);
+    console.log('📤 发送请求:', { content, formData, confirm });
 
     try {
       const response = await fetch('/api/chat', {
@@ -41,16 +43,37 @@ export const ChatPage: React.FC = () => {
         body: JSON.stringify({ content, formData, confirm }),
       });
 
-      const data = await response.json();
+      // 检查响应状态
+      if (!response.ok) {
+        return { error: `服务器错误: ${response.status}` };
+      }
+
+      // 检查响应内容
+      const text = await response.text();
+      if (!text) {
+        return { error: '服务器返回空响应' };
+      }
+
+      const data = JSON.parse(text);
+      console.log('📥 收到响应:', data);
       return data;
     } catch (error) {
-      return { error: error instanceof Error ? error.message : '未知错误' };
+      console.error('❌ 请求错误:', error);
+      return { error: error instanceof Error ? error.message : '网络错误，请检查后端服务' };
     } finally {
       setLoading(false);
     }
   };
 
   const handleSendMessage = async (content: string) => {
+    // 处理 /clear 命令
+    if (content.trim().toLowerCase() === '/clear') {
+      clearMessages();
+      setPendingContent('');
+      setPendingFormData(undefined);
+      return;
+    }
+
     addMessage({
       id: Date.now().toString(),
       role: 'user',
@@ -81,8 +104,8 @@ export const ChatPage: React.FC = () => {
         clarification: data.clarification,
         timestamp: new Date(),
       });
-      // messageId tracked via DOM
       setPendingContent(content);
+      setPendingFormData(undefined);
     } else if (data.actionPreview) {
       addMessage({
         id: msgId,
@@ -91,8 +114,8 @@ export const ChatPage: React.FC = () => {
         actionPreview: data.actionPreview,
         timestamp: new Date(),
       });
-      // messageId tracked via DOM
       setPendingContent(content);
+      setPendingFormData(undefined);
     } else {
       addMessage({
         id: msgId,
@@ -108,6 +131,9 @@ export const ChatPage: React.FC = () => {
     if (!pendingContent) return;
 
     updateMessage(messageId, { clarification: undefined });
+    
+    // 保存 formData 以便确认时使用
+    setPendingFormData(formData);
 
     const data = await sendMessage(pendingContent, formData);
 
@@ -128,15 +154,18 @@ export const ChatPage: React.FC = () => {
         content: data.result,
         model: data.model,
       });
-      // messageId cleared
       setPendingContent('');
+      setPendingFormData(undefined);
     }
   };
 
   const handleActionConfirm = async (messageId: string) => {
     if (!pendingContent) return;
 
-    const data = await sendMessage(pendingContent, undefined, true);
+    console.log('✅ 确认执行, pendingFormData:', pendingFormData);
+
+    // 使用保存的 formData 发送确认请求
+    const data = await sendMessage(pendingContent, pendingFormData, true);
 
     if (data.error) {
       updateMessage(messageId, {
@@ -151,8 +180,8 @@ export const ChatPage: React.FC = () => {
       });
     }
 
-    // messageId cleared
     setPendingContent('');
+    setPendingFormData(undefined);
   };
 
   const handleActionCancel = (messageId: string) => {
@@ -161,8 +190,8 @@ export const ChatPage: React.FC = () => {
       actionPreview: undefined,
       content: '❌ 操作已取消',
     });
-    // messageId cleared
     setPendingContent('');
+    setPendingFormData(undefined);
   };
 
   return (

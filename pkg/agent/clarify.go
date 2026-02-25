@@ -10,23 +10,39 @@ import (
 
 // ParseUserIntent 解析用户意图
 func (a *Agent) ParseUserIntent(ctx context.Context, userMsg string) (*K8sAction, error) {
-	prompt := fmt.Sprintf(`你是 Kubernetes 助手。分析用户指令返回 JSON。
+	prompt := fmt.Sprintf(`你是一个智能的 Kubernetes 助手。理解用户的自然语言指令，判断意图并提取关键信息。
 
 用户指令: %s
 
-返回格式（只返回 JSON）:
+请返回 JSON（只返回 JSON，不要其他文字）:
 {
-  "action": "create|get|scale|delete",
-  "resource": "pod|deployment|service",
-  "name": "名称（未指定为空）",
-  "namespace": "default",
-  "params": {"image": "", "replicas": 0}
+  "action": "操作类型",
+  "resource": "资源类型",
+  "name": "资源名称",
+  "namespace": "命名空间",
+  "params": {},
+  "is_k8s_operation": true/false,
+  "reply": "如果不是 K8s 操作，给用户的友好回复"
 }
 
+规则:
+1. is_k8s_operation=true 表示这是 K8s 相关操作
+2. is_k8s_operation=false 表示这是闲聊、打招呼、提问等，需要在 reply 中回复用户
+3. action 可以是任何动词，如: create, get, list, delete, scale, update, describe, logs, exec, apply, restart 等
+4. resource 可以是任何 K8s 资源，如: pod, deployment, service, configmap, secret, ingress, pvc, namespace, node 等
+5. namespace 规则:
+   - 如果用户明确指定命名空间（如 "查看 kube-system 的 pod"），使用指定的命名空间
+   - 如果用户说 "所有"、"全部"、"集群中"、"列出" 等，设置 namespace 为空字符串 "" 表示查询所有命名空间
+   - 其他情况默认为 "default"
+6. 对于非 K8s 问题，设置 is_k8s_operation=false 并在 reply 中给出友好回复
+
 示例:
-"部署 nginx" -> {"action":"create","resource":"deployment","name":"nginx","namespace":"default","params":{"image":"","replicas":0}}
-"查看 pod" -> {"action":"get","resource":"pod","name":"","namespace":"default","params":{}}
-"扩容到 5 个" -> {"action":"scale","resource":"deployment","name":"","namespace":"default","params":{"replicas":5}}`, userMsg)
+"查看所有 pod" -> {"action":"get","resource":"pod","name":"","namespace":"","params":{},"is_k8s_operation":true,"reply":""}
+"看看有哪些 deployment" -> {"action":"get","resource":"deployment","name":"","namespace":"","params":{},"is_k8s_operation":true,"reply":""}
+"查看 kube-system 的 pod" -> {"action":"get","resource":"pod","name":"","namespace":"kube-system","params":{},"is_k8s_operation":true,"reply":""}
+"部署一个 nginx" -> {"action":"create","resource":"deployment","name":"nginx","namespace":"default","params":{"replicas":1},"is_k8s_operation":true,"reply":""}
+"把 web 扩容到 5 个" -> {"action":"scale","resource":"deployment","name":"web","namespace":"default","params":{"replicas":5},"is_k8s_operation":true,"reply":""}
+"你好" -> {"action":"","resource":"","name":"","namespace":"default","params":{},"is_k8s_operation":false,"reply":"你好！我是 K8s Wizard。"}`, userMsg)
 
 	a.mu.RLock()
 	llm := a.llm
@@ -38,6 +54,7 @@ func (a *Agent) ParseUserIntent(ctx context.Context, userMsg string) (*K8sAction
 	}
 
 	llmOutput = cleanMarkdownJSON(llmOutput)
+	fmt.Printf("🔍 LLM 原始输出: %s\n", llmOutput)
 
 	var action K8sAction
 	if err := json.Unmarshal([]byte(llmOutput), &action); err != nil {
@@ -256,7 +273,7 @@ spec:
 			Summary:     fmt.Sprintf("扩缩容 %s 到 %d 副本", action.Name, replicas),
 		}
 
-	case "delete":
+    case "delete":
 		return &models.ActionPreview{
 			Type:        "delete",
 			Resource:    action.Resource + "/" + action.Name,
@@ -264,6 +281,35 @@ spec:
 			DangerLevel: "high",
 			Summary:     fmt.Sprintf("删除 %s/%s", ns, action.Name),
 		}
+
+case "get", "list", "show":
+		// 查看操作 - 检查资源类型是否有效
+		validResources := map[string]bool{
+			"pod": true, "pods": true,
+			"deployment": true, "deployments": true, "deploy": true,
+			"service": true, "services": true, "svc": true,
+			"configmap": true, "configmaps": true, "cm": true,
+			"secret": true, "secrets": true,
+			"ingress": true, "ingresses": true,
+			"pvc": true, "persistentvolumeclaim": true,
+			"namespace": true, "namespaces": true, "ns": true,
+			"node": true, "nodes": true,
+		}
+		if !validResources[action.Resource] {
+			return nil
+		}
+		// 查看操作不需要预览，直接执行
+		return &models.ActionPreview{
+			Type:        "get",
+			Resource:    action.Resource,
+			Namespace:   ns,
+			DangerLevel: "low",
+			Summary:     fmt.Sprintf("查看 %s 命名空间中的 %s", ns, action.Resource),
+		}
+
+	case "unknown":
+		// 未知操作 - 返回 nil 触发帮助消息
+		return nil
 	}
 
 	return nil
