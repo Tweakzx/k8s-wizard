@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Message } from '../types';
 import { ActionForm } from './ActionForm';
 import { ActionPreview } from './ActionPreview';
@@ -7,7 +7,7 @@ interface MessageListProps {
   messages: Message[];
   onFormSubmit?: (messageId: string, formData: Record<string, any>) => void;
   onActionConfirm?: (messageId: string) => void;
-  onActionCancel?: (messageId: string) => void;
+  onActionCancel?: (messageId: string) => void
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
@@ -16,6 +16,23 @@ export const MessageList: React.FC<MessageListProps> = ({
   onActionConfirm,
   onActionCancel,
 }) => {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 自动滚动到底部
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // 当消息变化时滚动到底部
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // 组件加载时滚动到底部
+  useEffect(() => {
+    scrollToBottom();
+  }, []);
+
   return (
     <div className="flex-1 overflow-y-auto bg-white rounded-xl border border-gray-200 shadow-sm p-4">
       <div className="flex flex-col gap-4">
@@ -64,6 +81,8 @@ export const MessageList: React.FC<MessageListProps> = ({
             )}
           </div>
         ))}
+        {/* 滚动锚点 */}
+        <div ref={messagesEndRef} />
       </div>
     </div>
   );
