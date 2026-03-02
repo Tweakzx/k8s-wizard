@@ -18,6 +18,7 @@ type Config struct {
 	Models ModelsConfig `json:"models"`
 	Agents AgentsConfig `json:"agents"`
 	API    APIConfig    `json:"api"`
+	Log    LogConfig    `json:"log,omitempty"`
 }
 
 // Meta contains metadata about the config
@@ -81,6 +82,18 @@ type APIConfig struct {
 	Host string `json:"host,omitempty"`
 }
 
+// LogConfig contains logging configuration
+type LogConfig struct {
+	EnableFile bool   `json:"enableFile,omitempty"` // Enable file logging
+	FilePath   string `json:"filePath,omitempty"`   // Log file path
+	MaxSize    int    `json:"maxSize,omitempty"`    // Max size in MB before rotation
+	MaxBackups int    `json:"maxBackups,omitempty"` // Max number of old log files
+	MaxAge     int    `json:"maxAge,omitempty"`     // Max age in days to retain
+	Compress   bool   `json:"compress,omitempty"`   // Compress rotated files
+	Level      string `json:"level,omitempty"`      // Log level: debug, info, warn, error
+	Format     string `json:"format,omitempty"`     // Log format: json or text
+	Console    bool   `json:"console,omitempty"`    // Also output to console
+}
 // Global config instance
 var (
 	globalConfig *Config
@@ -243,6 +256,16 @@ func createDefaultConfig() (*Config, error) {
 		API: APIConfig{
 			Port: 8080,
 			Host: "0.0.0.0",
+		},
+		Log: LogConfig{
+			EnableFile: true,
+			MaxSize:    100,
+			MaxBackups: 3,
+			MaxAge:     30,
+			Compress:   true,
+			Level:      "info",
+			Format:     "json",
+			Console:    true,
 		},
 	}
 
