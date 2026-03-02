@@ -1,70 +1,70 @@
-# Makefile for K8s Wizard (Unified)
+# Makefile for K8s Wizard
 
-.PHONY: all dev dev:api dev:web build build:api build:web clean install
+.PHONY: all dev dev_api dev_web build build_api build_web clean install run test fmt lint
 
-# 默认目标
+# Default target
 all: build
 
-# 安装依赖
+# Install dependencies
 install:
 	cd web && npm install 2>/dev/null || echo "Node not installed, skipping web deps"
 	go mod download
 	go mod tidy
 
-# 开发模式（同时启动前后端）
+# Development mode (start both frontend and backend)
 dev: install
-	@echo "🚀 Starting dev servers..."
-	@make dev:api &
-	@make dev:web
+	@echo "Starting dev servers..."
+	@make dev_api &
+	@make dev_web
 
-# 开发 API
-dev:api:
-	@echo "📡 Starting API server on :8080..."
-	@go run api/main.go
+# Development API
+dev_api:
+	@echo "Starting API server on :8080..."
+	@go run ./cmd/k8s-wizard
 
-# 开发 Web
-dev:web:
-	@echo "🎨 Starting web server on :5173..."
+# Development Web
+dev_web:
+	@echo "Starting web server on :5173..."
 	@cd web && npm run dev 2>/dev/null || echo "Node not installed"
 
-# 构建
-build: build:api build:web
+# Build
+build: build_api build_web
 
-# 构建 API
-build:api:
-	@echo "🔨 Building API..."
-	@go build -o bin/k8s-wizard-api ./api
-	@echo "✅ API built to bin/k8s-wizard-api"
+# Build API
+build_api:
+	@echo "Building API..."
+	@go build -o bin/k8s-wizard ./cmd/k8s-wizard
+	@echo "API built to bin/k8s-wizard"
 
-# 构建 Web
-build:web:
-	@echo "🔨 Building Web..."
+# Build Web
+build_web:
+	@echo "Building Web..."
 	@cd web && npm run build 2>/dev/null || echo "Skipping web build (Node not installed)"
-	@echo "✅ Web built to web/dist/"
+	@echo "Web built to web/dist/"
 
-# 运行
-run: build:api
-	@echo "🚀 Running K8s Wizard..."
-	@./bin/k8s-wizard-api
+# Run
+run: build_api
+	@echo "Running K8s Wizard..."
+	@./bin/k8s-wizard
 
-# 清理
+# Clean
 clean:
 	rm -rf bin/
 	rm -rf web/dist/
 	rm -rf web/node_modules/
-	@echo "✅ Cleaned build artifacts"
+	@echo "Cleaned build artifacts"
 
-# 测试
+# Test
 test:
 	go test ./...
 	@cd web && npm test 2>/dev/null || echo "Skipping web tests"
 
-# 格式化
+# Format
 fmt:
 	go fmt ./...
 	@cd web && npm run format 2>/dev/null || echo "Skipping format"
 
-# 代码检查
+# Lint
 lint:
 	go vet ./...
 	@cd web && npm run lint 2>/dev/null || echo "Skipping lint"
