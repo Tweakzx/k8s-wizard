@@ -9,6 +9,8 @@
 - **操作预览** - 执行前预览 YAML 配置，确认后再执行
 - **动态模型切换** - 前端实时切换 LLM 模型（GLM、DeepSeek、Claude）
 - **安全确认** - 危险操作（如删除）需要明确确认
+- **会话持久化** - 支持多轮对话，自动保存会话状态
+- **日志落盘** - 完整的日志系统，支持文件输出和日志轮转
 
 ## 截图
 
@@ -41,22 +43,63 @@
 | 后端 | Go 1.24, Gin |
 | K8s | client-go |
 | LLM | GLM, DeepSeek, Claude |
+| 工作流引擎 | langgraphgo |
+| 日志 | slog + lumberjack |
 
 ## 架构设计
 
 K8s Wizard 采用分层架构设计，核心组件包括：
 
-- **意图理解层** - LLM 解析自然语言，提取操作意图
-- **安全层** - 风险评估、权限检查、操作确认
-- **执行层** - client-go 调用 K8s API
-- **结果层** - 格式化输出、错误处理
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        API Layer (Gin)                       │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐ │
+│  │  Chat   │  │Resources│  │ Config  │  │    Health       │ │
+│  │ Handler │  │ Handler │  │ Handler │  │    Handler      │ │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────────┬────────┘ │
+└───────┼────────────┼────────────┼─────────────────┼─────────┘
+        │            │            │                 │
+┌───────┴────────────┴────────────┴─────────────────┴─────────┐
+│                      Agent Layer                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │                    GraphAgent                          │  │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  │  │
+│  │  │ Process │→ │ Clarify │→ │ Preview │→ │ Execute │  │  │
+│  │  │ Intent  │  │  Check  │  │ Generate│  │ Action  │  │  │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘  │  │
+│  └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+        │                              │
+        ▼                              ▼
+┌─────────────────┐          ┌─────────────────┐
+│   LLM Client    │          │   K8s Client    │
+│ (GLM/DeepSeek)  │          │   (client-go)   │
+└─────────────────┘          └─────────────────┘
+```
+
+### 核心包结构
 
 ```
-用户输入 → 意图解析 → 风险评估 → 执行操作 → 返回结果
-              ↓
-         需要澄清? → 生成表单 → 用户填写
-              ↓
-         危险操作? → 预览确认 → 用户确认
+pkg/
+├── agent/           # Agent 核心
+│   ├── agent.go     # GraphAgent 实现 + 接口定义
+│   └── ...          # 工厂函数、Checkpoint 支持
+│
+├── workflow/        # 工作流引擎
+│   ├── state.go     # 状态定义 (AgentState, K8sAction)
+│   ├── nodes.go     # 节点工厂 (Parse, Clarify, Preview, Execute)
+│   ├── routing.go   # 路由函数
+│   ├── graph.go     # 图构建器
+│   └── checkpointer.go  # 会话持久化
+│
+├── llm/             # LLM 客户端
+│   └── client.go    # OpenAI/Anthropic 兼容 API
+│
+├── config/          # 配置管理
+│   └── config.go    # 配置加载、模型发现
+│
+└── logger/          # 日志系统
+    └── logger.go    # 结构化日志 + 文件轮转
 ```
 
 > 详细架构设计请参考 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -144,11 +187,20 @@ k8s-wizard/
 │       └── requests.go
 │
 ├── pkg/                      # 核心包
-│   ├── agent/                # Agent 逻辑
-│   │   ├── agent.go          # LLM 交互
-│   │   └── clarify.go        # 澄清 + 预览
-│   └── config/               # 配置管理
-│       └── config.go
+│   ├── agent/                # Agent 实现
+│   │   └── agent.go          # GraphAgent + 接口 + 工厂
+│   ├── workflow/             # 工作流引擎
+│   │   ├── state.go          # 状态定义
+│   │   ├── nodes.go          # 节点实现
+│   │   ├── routing.go        # 路由逻辑
+│   │   ├── graph.go          # 图构建
+│   │   └── checkpointer.go   # 会话持久化
+│   ├── llm/                  # LLM 客户端
+│   │   └── client.go
+│   ├── config/               # 配置管理
+│   │   └── config.go
+│   └── logger/               # 日志系统
+│       └── logger.go
 │
 ├── web/                      # 前端
 │   ├── src/
@@ -259,9 +311,34 @@ curl -X POST http://localhost:8080/api/chat \
   "agents": {
     "defaults": {"model": {"primary": "glm/glm-4-flash"}}
   },
-  "api": {"port": 8080, "host": "0.0.0.0"}
+  "api": {"port": 8080, "host": "0.0.0.0"},
+  "log": {
+    "enableFile": true,
+    "filePath": "",
+    "maxSize": 100,
+    "maxBackups": 3,
+    "maxAge": 30,
+    "compress": true,
+    "level": "info",
+    "format": "json",
+    "console": true
+  }
 }
 ```
+
+### 日志配置
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `enableFile` | 启用文件日志 | `true` |
+| `filePath` | 日志文件路径 | `~/.k8s-wizard/logs/k8s-wizard.log` |
+| `maxSize` | 单文件最大 MB | `100` |
+| `maxBackups` | 保留旧文件数 | `3` |
+| `maxAge` | 保留天数 | `30` |
+| `compress` | 压缩旧文件 | `true` |
+| `level` | 日志级别 | `info` |
+| `format` | 输出格式 | `json` |
+| `console` | 同时输出到控制台 | `true` |
 
 ### 环境变量
 
@@ -319,6 +396,18 @@ make dev:api
 
 确保配置了对应提供商的 API Key，只有配置了 Key 的提供商才会显示模型。
 
+### 日志文件位置
+
+默认日志文件位于 `~/.k8s-wizard/logs/k8s-wizard.log`
+
+```bash
+# 查看日志
+tail -f ~/.k8s-wizard/logs/k8s-wizard.log
+
+# 查看最近 100 行
+tail -100 ~/.k8s-wizard/logs/k8s-wizard.log
+```
+
 ## 开发路线图
 
 详见 [docs/ROADMAP.md](docs/ROADMAP.md)
@@ -327,9 +416,33 @@ make dev:api
 - [x] 智能澄清流程
 - [x] 动态模型切换
 - [x] YAML 预览确认
+- [x] 会话持久化（SQLite Checkpointer）
+- [x] 结构化日志系统
 - [ ] 多轮会话支持
 - [ ] 流式响应
 - [ ] 更多 K8s 资源
+
+## 测试
+
+项目包含完整的单元测试：
+
+```bash
+# 运行所有测试
+make test
+
+# 运行测试并查看覆盖率
+go test ./... -coverprofile=cover.out
+go tool cover -html=cover.out
+```
+
+### 测试覆盖
+
+| 包 | 覆盖率 |
+|----|--------|
+| `pkg/agent` | 46%+ |
+| `pkg/config` | 49%+ |
+| `pkg/llm` | 84%+ |
+| `pkg/workflow` | 61%+ |
 
 ## 许可证
 

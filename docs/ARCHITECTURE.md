@@ -7,9 +7,12 @@
 - [设计原则](#设计原则)
 - [整体架构](#整体架构)
 - [核心组件](#核心组件)
+- [包结构](#包结构)
+- [工作流引擎](#工作流引擎)
 - [数据流](#数据流)
 - [安全设计](#安全设计)
 - [扩展性设计](#扩展性设计)
+- [日志系统](#日志系统)
 - [技术选型](#技术选型)
 
 ---
@@ -18,7 +21,7 @@
 
 ### 1. Safety First（安全优先）
 
-- 所有写操作默认 dry-run，需要用户确认
+- 所有写操作默认需要确认，用户可预览 YAML
 - 危险操作（删除、强制重启等）需要二次确认
 - 支持操作回滚
 
@@ -30,14 +33,13 @@
 
 ### 3. Graceful Degradation（优雅降级）
 
-- LLM 失败时回退到规则引擎
-- 网络异常时支持离线模式
+- LLM 失败时返回错误信息
 - 部分功能不可用不影响核心功能
 
 ### 4. Auditability（可审计性）
 
-- 所有操作记录审计日志
-- 支持操作回放和追踪
+- 所有操作记录日志
+- 支持日志落盘和轮转
 - 变更历史可查询
 
 ---
@@ -51,39 +53,45 @@
 └───────────────────────────────┬─────────────────────────────────────┘
                                 │
 ┌───────────────────────────────▼─────────────────────────────────────┐
-│                      网关层 (Gateway Layer)                           │
-│   • 认证授权 (RBAC)    • 限流控制    • 审计日志    • 请求路由         │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────────┐
-│                   意图理解层 (Intent Understanding)                    │
+│                      API 层 (Gin Framework)                           │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
-│   │ LLM Parser  │→ │ Validator   │→ │ Disambiguator│                 │
-│   │  意图解析   │  │  参数验证   │  │  模糊消歧   │                  │
-│   └─────────────┘  └─────────────┘  └─────────────┘                 │
+│   │ ChatHandler │  │ ConfigHandler│  │ResourcesHdlr│                 │
+│   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                 │
+│          │                │                │                         │
+│   ┌──────▼────────────────▼────────────────▼──────┐                 │
+│   │              Middleware (CORS, Logging)        │                 │
+│   └────────────────────────────────────────────────┘                 │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 │
 ┌───────────────────────────────▼─────────────────────────────────────┐
-│                     规划层 (Planning Layer)                           │
-│   • 生成操作计划    • 风险评估    • 依赖分析    • 影响范围计算         │
+│                      Agent 层 (GraphAgent)                            │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │                    Workflow Engine (langgraphgo)              │   │
+│   │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐         │   │
+│   │  │ Parse   │→ │ Merge   │→ │ Check   │→ │ Preview │         │   │
+│   │  │ Intent  │  │ Form    │  │ Clarify │  │ Generate│         │   │
+│   │  └─────────┘  └─────────┘  └─────────┘  └─────────┘         │   │
+│   │        │                                   │                  │   │
+│   │        └───────────────────────────────────┘                  │   │
+│   │                          │                                    │   │
+│   │  ┌─────────┐              │                                   │   │
+│   │  │ Execute │←─────────────┘                                   │   │
+│   │  │ Action  │                                                  │   │
+│   │  └─────────┘                                                  │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│   ┌────────────────────┐  ┌────────────────────┐                    │
+│   │  LLM Client        │  │  K8s Client        │                    │
+│   │  (GLM/DeepSeek/etc)│  │  (client-go)       │                    │
+│   └────────────────────┘  └────────────────────┘                    │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 │
 ┌───────────────────────────────▼─────────────────────────────────────┐
-│                     安全层 (Safety Layer)                             │
-│   • Dry-run 预览    • 权限检查    • 破坏性操作确认    • 审批流程       │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────────┐
-│                     执行层 (Execution Layer)                          │
+│                      基础设施层 (Infrastructure)                       │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
-│   │  client-go  │  │    Helm     │  │   kubectl   │                 │
-│   │  原生 API   │  │  Chart 管理 │  │  命令行     │                  │
+│   │   Logger    │  │  Config     │  │ Checkpointer│                 │
+│   │ (slog+lumberjack) │(JSON File)│  │  (SQLite)   │                 │
 │   └─────────────┘  └─────────────┘  └─────────────┘                 │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────────┐
-│                     结果层 (Result Layer)                             │
-│   • 结果格式化    • 错误恢复    • 状态跟踪    • 回滚支持              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -91,254 +99,207 @@
 
 ## 核心组件
 
-### 1. 意图理解器 (Intent Parser)
+### 1. GraphAgent (pkg/agent)
 
-负责将自然语言转换为结构化的操作意图。
-
-```go
-type Intent struct {
-    // 核心信息
-    Action      string            // create, get, update, delete, scale, describe...
-    Resource    string            // pod, deployment, service, configmap...
-    Name        string            // 资源名称
-    Namespace   string            // 命名空间（空=所有命名空间）
-    Params      map[string]any    // 操作参数
-    
-    // 元信息
-    Confidence  float64           // 置信度 0.0-1.0
-    Ambiguities []string          // 模糊点列表，需要澄清
-    RawQuery    string            // 原始用户输入
-    
-    // 上下文
-    SessionID   string            // 会话 ID
-    Context     *ConversationContext
-    
-    // 安全信息
-    RiskLevel   RiskLevel         // low, medium, high, critical
-    Reversible  bool              // 是否可逆
-    ImpactScope ImpactScope       // 影响范围
-}
-```
-
-**工作流程**：
-
-```
-用户输入 → LLM 解析 → 置信度评估 → 模糊检测 → 结构化 Intent
-                ↓
-         置信度 < 0.7? → 触发澄清流程
-```
-
-### 2. 澄清管理器 (Clarification Manager)
-
-当意图不明确时，收集必要信息。
+核心 Agent 实现，封装工作流引擎提供统一接口。
 
 ```go
-type ClarificationRequest struct {
-    Type        string              // form, options, confirm
-    Title       string
-    Description string
-    Fields      []ClarificationField
-    Timeout     time.Duration
+type GraphAgent struct {
+    graph     *lgg.StateRunnable[workflow.AgentState]
+    deps      *workflow.Dependencies
+    mu        sync.RWMutex
+    modelName string
 }
 
-type ClarificationField struct {
-    Key         string
-    Label       string
-    Type        string              // text, number, select, multiselect
-    Required    bool
-    Default     interface{}
-    Options     []Option
-    Validator   ValidatorFunc
-}
+// 主要方法
+func (a *GraphAgent) ProcessCommand(ctx context.Context, userMsg string) (string, error)
+func (a *GraphAgent) ProcessCommandWithClarification(...) (result, clarification, preview, error)
+func (a *GraphAgent) SetModel(modelName string) error
+func (a *GraphAgent) GetModelName() string
 ```
 
-**澄清策略**：
+### 2. Workflow Engine (pkg/workflow)
 
-| 场景 | 策略 |
-|------|------|
-| 缺少必要参数 | 动态生成表单 |
-| 多个匹配资源 | 展示选项列表 |
-| 危险操作确认 | 二次确认弹窗 |
-| 模糊指令 | 提供操作建议 |
+基于 langgraphgo 的工作流引擎，定义状态流转。
 
-### 3. 操作规划器 (Action Planner)
-
-将意图转换为可执行的操作计划。
+#### 状态定义 (state.go)
 
 ```go
-type ActionPlan struct {
-    ID          string
-    Intent      *Intent
-    Steps       []ExecutionStep
-    Dependencies []string           // 依赖的其他操作
-    RollbackPlan []RollbackStep    // 回滚计划
-    
-    // 风险评估
-    RiskAssessment *RiskAssessment
-    
-    // 预览信息
-    YAMLPreview   string
-    DiffPreview   string
-    Summary       string
-}
+type AgentState struct {
+    // 输入
+    UserMessage string
+    FormData    map[string]interface{}
+    Confirm     *bool
+    ThreadID    string
 
-type ExecutionStep struct {
-    Type        string              // k8s_api, helm, kubectl
-    Action      string
-    Resource    string
-    Params      map[string]any
-    DryRun      bool
-}
-```
+    // 解析结果
+    Action         *K8sAction
+    IsK8sOperation bool
 
-### 4. 安全控制器 (Safety Controller)
+    // 澄清
+    ClarificationRequest *models.ClarificationRequest
+    NeedsClarification   bool
 
-确保所有操作符合安全策略。
+    // 预览
+    ActionPreview *models.ActionPreview
 
-```go
-type SafetyPolicy struct {
-    // 操作分级
-    OperationLevels map[string]RiskLevel
-    
-    // 命名空间限制
-    AllowedNamespaces   []string
-    ProtectedNamespaces []string    // 禁止操作的命名空间
-    
-    // 资源保护
-    ProtectedResources []ResourcePattern
-    
-    // 确认策略
-    RequireConfirmation map[RiskLevel]bool
-    RequireApproval     map[RiskLevel]bool
-    
-    // 限流
-    RateLimits map[string]RateLimit
-}
-
-type RiskAssessment struct {
-    Level           RiskLevel
-    Factors         []RiskFactor
-    ImpactResources []string
-    Reversible      bool
-    RollbackComplexity string
-}
-```
-
-**风险等级**：
-
-| 等级 | 操作类型 | 确认要求 |
-|------|---------|---------|
-| Low | get, list, describe | 无 |
-| Medium | create, scale | 预览确认 |
-| High | update, delete | 二次确认 |
-| Critical | 强制删除、批量操作 | 审批流程 |
-
-### 5. 执行引擎 (Execution Engine)
-
-执行操作计划并管理状态。
-
-```go
-type Executor interface {
-    // 预览（dry-run）
-    Preview(ctx context.Context, plan *ActionPlan) (*PreviewResult, error)
-    
     // 执行
-    Execute(ctx context.Context, plan *ActionPlan) (*ExecutionResult, error)
-    
-    // 状态查询
-    Status(ctx context.Context, executionID string) (*ExecutionStatus, error)
-    
-    // 回滚
-    Rollback(ctx context.Context, executionID string) error
-    
-    // 取消
-    Cancel(ctx context.Context, executionID string) error
-}
+    Result string
+    Error  error
 
-type ExecutionResult struct {
-    ID          string
-    Status      ExecutionStatus    // pending, running, succeeded, failed
-    Steps       []StepResult
-    StartTime   time.Time
-    EndTime     time.Time
-    Error       error
-    Output      string
-    Resources   []ResourceRef      // 受影响的资源
+    // 状态
+    Status string // pending, needs_info, needs_confirm, executed, error, chat
 }
 ```
 
-### 6. 会话管理器 (Session Manager)
-
-管理对话上下文和状态。
+#### 节点实现 (nodes.go)
 
 ```go
-type Session struct {
-    ID           string
-    UserID       string
-    CreatedAt    time.Time
-    ExpiresAt    time.Time
-    
-    // 对话历史
-    Messages     []Message
-    
-    // 工作上下文
-    CurrentNamespace string
-    RecentResources  []ResourceRef
-    LastIntent       *Intent
-    
-    // 状态
-    State        SessionState       // active, waiting_input, executing
-    PendingAction *ActionPlan
+// 节点工厂函数
+func MakeParseIntentNode(llmClient llm.Client) NodeFunc
+func MakeMergeFormNode() NodeFunc
+func MakeCheckClarifyNode() NodeFunc
+func MakeGeneratePreviewNode() NodeFunc
+func MakeExecuteNode(client *kubernetes.Clientset) NodeFunc
+```
+
+#### 路由函数 (routing.go)
+
+```go
+func RouteAfterParse(ctx context.Context, state AgentState) string
+func RouteAfterClarify(ctx context.Context, state AgentState) string
+func RouteAfterPreview(ctx context.Context, state AgentState) string
+```
+
+### 3. LLM Client (pkg/llm)
+
+统一的 LLM 客户端接口，支持多种提供商。
+
+```go
+type Client interface {
+    Chat(ctx context.Context, prompt string) (string, error)
+    GetModel() string
 }
 
-// 上下文感知
-func (s *Session) ResolveReference(ref string) *ResourceRef {
-    // "它" → 上次提到的资源
-    // "那个 namespace" → 上次操作的命名空间
-    // "刚才的 deployment" → 最近操作的 deployment
+// 支持的 API 格式
+// - OpenAI Completions (GLM, DeepSeek)
+// - Anthropic (Claude)
+```
+
+### 4. Checkpointer (pkg/workflow)
+
+会话持久化，基于 SQLite 实现。
+
+```go
+type CheckpointerManager struct {
+    store   *sqlite.SqliteCheckpointStore
+    dataDir string
 }
+
+func (m *CheckpointerManager) GetStore() lgg.CheckpointStore
+func (m *CheckpointerManager) ClearSession(ctx context.Context, threadID string) error
+```
+
+---
+
+## 包结构
+
+```
+pkg/
+├── agent/                    # Agent 实现
+│   └── agent.go              # GraphAgent, GraphAgentWithCheckpointer
+│
+├── workflow/                 # 工作流引擎
+│   ├── state.go              # AgentState, K8sAction, Dependencies
+│   ├── nodes.go              # 节点工厂函数
+│   ├── routing.go            # 路由决策函数
+│   ├── graph.go              # 图构建器
+│   └── checkpointer.go       # 会话持久化
+│
+├── llm/                      # LLM 客户端
+│   └── client.go             # OpenAI/Anthropic 兼容客户端
+│
+├── config/                   # 配置管理
+│   └── config.go             # 配置加载、模型发现
+│
+└── logger/                   # 日志系统
+    └── logger.go             # 结构化日志、文件轮转
+```
+
+---
+
+## 工作流引擎
+
+### 节点图
+
+```
+                    ┌─────────────────┐
+                    │  parse_intent   │
+                    │  (解析意图)      │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              │              ▼
+        ┌─────────┐          │        ┌─────────┐
+        │  END    │          │        │ END     │
+        │ (Chat)  │          │        │ (Error) │
+        └─────────┘          │        └─────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+              ▼                             │
+        ┌───────────┐                       │
+        │ merge_form│                       │
+        │ (合并表单) │                       │
+        └─────┬─────┘                       │
+              │                             │
+              ▼                             │
+        ┌─────────────┐                     │
+        │check_clarify│                     │
+        │ (检查澄清)   │                     │
+        └──────┬──────┘                     │
+               │                            │
+     ┌─────────┴─────────┐                  │
+     │                   │                  │
+     ▼                   ▼                  │
+┌─────────┐        ┌───────────────┐        │
+│   END   │        │generate_preview│        │
+│(需澄清) │        │  (生成预览)    │        │
+└─────────┘        └───────┬───────┘        │
+                           │                │
+                 ┌─────────┴─────────┐      │
+                 │                   │      │
+                 ▼                   ▼      │
+           ┌─────────┐          ┌─────────┐ │
+           │ execute │          │   END   │ │
+           │ (执行)  │          │(需确认) │ │
+           └────┬────┘          └─────────┘ │
+                │                           │
+                ▼                           │
+           ┌─────────┐                      │
+           │   END   │◄─────────────────────┘
+           │ (完成)  │
+           └─────────┘
+```
+
+### 状态流转
+
+```go
+// 状态常量
+const (
+    StatusPending      = "pending"       // 初始状态
+    StatusNeedsInfo    = "needs_info"    // 需要澄清
+    StatusNeedsConfirm = "needs_confirm" // 需要确认
+    StatusExecuted     = "executed"      // 已执行
+    StatusError        = "error"         // 错误
+    StatusChat         = "chat"          // 闲聊
+)
 ```
 
 ---
 
 ## 数据流
-
-### 查询操作流程
-
-```
-用户: "查看所有 pod"
-    │
-    ▼
-┌─────────────────┐
-│  Intent Parser  │ → Intent{Action: "get", Resource: "pod", Namespace: ""}
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Validator    │ → 检查权限、参数有效性
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Safety Checker  │ → Risk: Low, 无需确认
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Executor     │ → client-go: Pods.List(all namespaces)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Result Handler  │ → 格式化输出，添加命名空间标签
-└─────────────────┘
-         │
-         ▼
-响应: "📦 集群中的 Pod (共 11 个):
-      • [kube-system] coredns-xxx (Running)
-      • [default] nginx-xxx (Running)
-      ..."
-```
 
 ### 创建操作流程
 
@@ -347,34 +308,36 @@ func (s *Session) ResolveReference(ref string) *ResourceRef {
     │
     ▼
 ┌─────────────────┐
-│  Intent Parser  │ → Intent{Action: "create", Resource: "deployment", 
+│  Parse Intent   │ → K8sAction{Action: "create", Resource: "deployment", 
 │                   │         Name: "nginx", Params: 缺少 replicas, image}
 └────────┬────────┘
-         │ 置信度低，触发澄清
-         ▼
-┌─────────────────┐
-│ Clarification   │ → 生成表单，收集缺失信息
-└────────┬────────┘
-         │
-         ▼
-用户填写表单 → Intent 更新完整
          │
          ▼
 ┌─────────────────┐
-│  Action Planner │ → 生成 ActionPlan + YAML 预览
+│   Merge Form    │ → 如果有 FormData，合并到 Action
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│ Safety Checker  │ → Risk: Medium, 需要确认
+│  Check Clarify  │ → 检查是否需要澄清（缺少必填字段）
+└────────┬────────┘
+         │ 需要澄清
+         ▼
+返回 ClarificationRequest (表单)
+         │
+         │ 用户填写表单
+         ▼
+┌─────────────────┐
+│ Generate Preview│ → 生成 YAML 预览和危险等级
 └────────┬────────┘
          │
          ▼
-用户确认 → 执行
+返回 ActionPreview (等待确认)
          │
+         │ 用户确认
          ▼
 ┌─────────────────┐
-│    Executor     │ → client-go: Deployments.Create()
+│     Execute     │ → client-go: Deployments.Create()
 └────────┬────────┘
          │
          ▼
@@ -385,65 +348,27 @@ func (s *Session) ResolveReference(ref string) *ResourceRef {
 
 ## 安全设计
 
-### 1. 认证授权
+### 风险等级
+
+| 等级 | 操作类型 | 确认要求 |
+|------|---------|---------|
+| Low | get, list, describe | 无 |
+| Medium | create, scale | 预览确认 |
+| High | update, delete | 二次确认 |
+
+### 实现方式
 
 ```go
-// 用户身份
-type UserIdentity struct {
-    ID          string
-    Name        string
-    Roles       []string
-    Permissions []Permission
-}
-
-// RBAC 权限检查
-func CheckPermission(user *UserIdentity, intent *Intent) error {
-    // 1. 检查操作权限
-    // 2. 检查命名空间权限
-    // 3. 检查资源权限
-}
-```
-
-### 2. 操作审计
-
-```go
-type AuditLog struct {
-    ID          string
-    Timestamp   time.Time
-    UserID      string
-    SessionID   string
-    
-    // 操作信息
-    Intent      *Intent
-    ActionPlan  *ActionPlan
-    
-    // 结果
-    Status      string
-    Error       string
-    
-    // 资源变更
-    Changes     []ResourceChange
-}
-
-// 所有写操作记录审计日志
-func Audit(intent *Intent, result *ExecutionResult) {
-    // 1. 记录操作详情
-    // 2. 记录资源变更
-    // 3. 存储到持久化存储
-}
-```
-
-### 3. 敏感信息保护
-
-```go
-// 敏感信息检测
-func DetectSecrets(params map[string]any) []string {
-    // 检测 API Key、密码、Token 等
-}
-
-// 敏感信息脱敏
-func MaskSecrets(output string) string {
-    // 替换敏感信息为 ***
+// 生成预览时设置危险等级
+func generateActionPreview(action *K8sAction) *models.ActionPreview {
+    switch action.Action {
+    case "create":
+        return &ActionPreview{DangerLevel: "low", ...}
+    case "scale":
+        return &ActionPreview{DangerLevel: "medium", ...}
+    case "delete":
+        return &ActionPreview{DangerLevel: "high", ...}
+    }
 }
 ```
 
@@ -451,79 +376,105 @@ func MaskSecrets(output string) string {
 
 ## 扩展性设计
 
-### 1. 插件化资源支持
+### 1. 插件化节点
 
 ```go
-// 资源处理器接口
-type ResourceHandler interface {
-    // 支持的资源类型
-    Types() []string
-    
-    // 解析意图
-    ParseIntent(intent *Intent) error
-    
-    // 生成操作计划
-    Plan(intent *Intent) (*ActionPlan, error)
-    
-    // 执行操作
-    Execute(ctx context.Context, plan *ActionPlan) (*ExecutionResult, error)
-    
-    // 格式化结果
-    Format(result *ExecutionResult) string
+// 节点工厂函数签名
+type NodeFunc func(ctx context.Context, state AgentState) (AgentState, error)
+
+// 自定义节点
+func MakeCustomNode(deps *Dependencies) NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        // 自定义逻辑
+        return state, nil
+    }
 }
 
-// 资源处理器注册
-func RegisterHandler(handler ResourceHandler) {
-    // 注册到处理器映射表
-}
+// 添加到图
+g.AddNode("custom_node", "Custom Node", MakeCustomNode(deps))
 ```
 
-### 2. 多集群支持
+### 2. 多 LLM 提供商
 
 ```go
-type ClusterManager struct {
-    clusters map[string]*ClusterConnection
-}
-
-type ClusterConnection struct {
-    Name       string
-    Config     *rest.Config
-    Client     *kubernetes.Clientset
-    
-    // 集群信息
-    Version    string
-    NodeCount  int
-}
-
-// 多集群操作
-func ExecuteOnCluster(clusterName string, intent *Intent) (*ExecutionResult, error) {
-    // 1. 获取集群连接
-    // 2. 执行操作
-    // 3. 返回结果
-}
-```
-
-### 3. LLM 提供商抽象
-
-```go
-type LLMProvider interface {
-    // 解析意图
-    ParseIntent(ctx context.Context, query string, session *Session) (*Intent, error)
-    
-    // 生成回复
-    GenerateReply(ctx context.Context, prompt string) (string, error)
-    
-    // 模型信息
-    ModelName() string
-    ProviderName() string
+// LLM 接口
+type Client interface {
+    Chat(ctx context.Context, prompt string) (string, error)
+    GetModel() string
 }
 
 // 支持的提供商
 // - GLM (智谱)
 // - DeepSeek
 // - Claude (Anthropic)
-// - OpenAI
-// - 本地模型 (Ollama)
+// - 可扩展其他 OpenAI 兼容 API
+```
+
+### 3. 多集群支持（规划中）
+
+```go
+type ClusterManager struct {
+    clusters map[string]*ClusterConnection
+}
+```
+
+---
+
+## 日志系统
+
+### 架构
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   Logger Package                      │
+│  ┌──────────────────────────────────────────────┐   │
+│  │              slog.Logger                       │   │
+│  │  ┌─────────────┐  ┌───────────────────────┐  │   │
+│  │  │ JSON Handler│  │   MultiWriter         │  │   │
+│  │  └─────────────┘  │  ┌─────────┐ ┌──────┐│  │   │
+│  │                   │  │ Console │ │ File ││  │   │
+│  │                   │  └─────────┘ └──────┘│  │   │
+│  │                   └───────────────────────┘  │   │
+│  └──────────────────────────────────────────────┘   │
+│                                                      │
+│  ┌──────────────────────────────────────────────┐   │
+│  │           Lumberjack (Log Rotation)           │   │
+│  │  • MaxSize: 100MB                             │   │
+│  │  • MaxBackups: 3                              │   │
+│  │  • MaxAge: 30 days                            │   │
+│  │  • Compress: true                             │   │
+│  └──────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
+
+### 使用方式
+
+```go
+// 初始化
+log, _ := logger.Init(&logger.Config{
+    EnableFile: true,
+    FilePath:   "~/.k8s-wizard/logs/k8s-wizard.log",
+    Level:      "info",
+    Format:     "json",
+    Console:    true,
+})
+defer log.Close()
+
+// 记录日志
+logger.Info("操作完成", "action", "create", "resource", "deployment/nginx")
+logger.Error("操作失败", "error", err, "action", "delete")
+```
+
+### 日志格式
+
+```json
+{
+  "time": "2025-03-01T17:30:00+08:00",
+  "level": "INFO",
+  "msg": "操作完成",
+  "action": "create",
+  "resource": "deployment/nginx"
+}
 ```
 
 ---
@@ -536,34 +487,21 @@ type LLMProvider interface {
 | **后端** | Go 1.24 + Gin | 高性能，原生 K8s 支持 |
 | **K8s 客户端** | client-go | 官方 Go 客户端 |
 | **LLM** | GLM / DeepSeek / Claude | 国内友好，多模型支持 |
-| **会话存储** | Redis | 高性能，支持过期 |
-| **审计存储** | PostgreSQL | 可靠的关系型存储 |
-| **部署** | Helm + K8s Operator | 云原生部署 |
+| **工作流引擎** | langgraphgo | 状态图工作流 |
+| **会话存储** | SQLite | 嵌入式数据库，无需额外依赖 |
+| **日志** | slog + lumberjack | 结构化日志，自动轮转 |
+| **部署** | Helm + K8s | 云原生部署 |
 
 ---
 
-## 未来规划
+## 测试覆盖
 
-### 短期 (v0.2.0)
-
-- [ ] 多轮会话支持
-- [ ] 流式响应（打字机效果）
-- [ ] Markdown 渲染
-- [ ] 更多资源类型（CRD 支持）
-
-### 中期 (v0.3.0)
-
-- [ ] 多集群管理
-- [ ] Helm Chart 支持
-- [ ] 操作回滚
-- [ ] 审批流程
-
-### 长期 (v1.0.0)
-
-- [ ] 自然语言生成 K8s YAML
-- [ ] 智能故障诊断
-- [ ] 自动化运维建议
-- [ ] VS Code 插件
+| 包 | 测试文件 | 覆盖率 |
+|----|---------|--------|
+| `pkg/agent` | `agent_test.go` | 46%+ |
+| `pkg/workflow` | `*_test.go` | 61%+ |
+| `pkg/config` | `config_test.go` | 49%+ |
+| `pkg/llm` | `client_test.go` | 84%+ |
 
 ---
 
@@ -571,4 +509,5 @@ type LLMProvider interface {
 
 - [Kubernetes API Reference](https://kubernetes.io/docs/reference/kubernetes-api/)
 - [client-go Documentation](https://github.com/kubernetes/client-go)
+- [langgraphgo](https://github.com/smallnest/langgraphgo)
 - [LLM Prompt Engineering Best Practices](https://platform.openai.com/docs/guides/prompt-engineering)
