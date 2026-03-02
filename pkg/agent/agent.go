@@ -1,239 +1,376 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"strings"
 	"sync"
-	"time"
-
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"k8s-wizard/api/models"
 	"k8s-wizard/pkg/config"
+	"k8s-wizard/pkg/k8s"
+	"k8s-wizard/pkg/llm"
+	"k8s-wizard/pkg/workflow"
+
+	lgg "github.com/smallnest/langgraphgo/graph"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
-// LLMClient LLM 客户端接口
-type LLMClient interface {
-	Chat(ctx context.Context, prompt string) (string, error)
-	GetModel() string
+// ============================================================================
+// Interface Definition
+// ============================================================================
+
+// AgentInterface defines the interface for K8s Wizard agents.
+// GraphAgent and GraphAgentWithCheckpointer implement this interface.
+type AgentInterface interface {
+	// ProcessCommandWithClarification processes a command with the clarification flow.
+	ProcessCommandWithClarification(ctx context.Context, userMsg string, formData map[string]interface{}, confirm *bool) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error)
+
+	// ProcessCommand processes a simple command without clarification flow.
+	ProcessCommand(ctx context.Context, userMsg string) (string, error)
+
+	// GetModelName returns the current model name.
+	GetModelName() string
+
+	// SetModel switches to a different model.
+	SetModel(modelString string) error
 }
 
-// ConfiguredLLMClient 带配置信息的 LLM 客户端
-type ConfiguredLLMClient struct {
-	Provider    string
-	ModelID     string
-	BaseURL     string
-	AuthType    string
-	apiKey      string
-	httpClient  *http.Client
-	apiFormat   string // "openai-completions" or "anthropic"
+// ============================================================================
+// GraphAgent (without checkpointing)
+// ============================================================================
+
+// GraphAgent wraps the langgraphgo graph and provides a compatible interface
+// with the existing Agent API.
+type GraphAgent struct {
+	graph     *lgg.StateRunnable[workflow.AgentState]
+	deps      *workflow.Dependencies
+	mu        sync.RWMutex
+	modelName string
 }
 
-func NewConfiguredLLMClient(provider string, modelID string, providerConfig config.Provider) (*ConfiguredLLMClient, error) {
-	apiKey, err := config.GetAPIKey(provider)
+// NewGraphAgent creates a new GraphAgent.
+func NewGraphAgent(k8sClient k8s.Client, llmClient llm.Client, modelName string) (*GraphAgent, error) {
+	deps := &workflow.Dependencies{
+		K8sClient: k8sClient,
+		LLM:       llmClient,
+		ModelName: modelName,
+	}
+
+	compiledGraph, err := workflow.NewK8sWizardGraph(deps)
 	if err != nil {
 		return nil, err
 	}
 
-	return &ConfiguredLLMClient{
-		Provider:   provider,
-		ModelID:    modelID,
-		BaseURL:    providerConfig.BaseURL,
-		AuthType:   providerConfig.Auth,
-		apiFormat:  providerConfig.API,
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+	return &GraphAgent{
+		graph:     compiledGraph,
+		deps:      deps,
+		modelName: modelName,
 	}, nil
 }
 
-func (c *ConfiguredLLMClient) GetModel() string {
-	return fmt.Sprintf("%s/%s", c.Provider, c.ModelID)
-}
+// ProcessCommandWithClarification processes a command with the clarification flow.
+// This maintains API compatibility with the existing Agent interface.
+func (a *GraphAgent) ProcessCommandWithClarification(
+	ctx context.Context,
+	userMsg string,
+	formData map[string]interface{},
+	confirm *bool,
+) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error) {
+	a.mu.RLock()
+	modelName := a.modelName
+	a.mu.RUnlock()
 
-func (c *ConfiguredLLMClient) Chat(ctx context.Context, prompt string) (string, error) {
-	switch c.apiFormat {
-	case "anthropic":
-		return c.chatAnthropic(ctx, prompt)
-	case "openai-completions", "":
-		return c.chatOpenAIFormat(ctx, prompt)
-	default:
-		return "", fmt.Errorf("unsupported API format: %s", c.apiFormat)
+	// Build initial state
+	initialState := workflow.AgentState{
+		UserMessage: userMsg,
+		FormData:    formData,
+		Confirm:     confirm,
+		Status:      workflow.StatusPending,
 	}
-}
+	_ = modelName // modelName is currently unused but kept for future use
 
-func (c *ConfiguredLLMClient) chatAnthropic(ctx context.Context, prompt string) (string, error) {
-	requestBody := map[string]interface{}{
-		"model":      c.ModelID,
-		"max_tokens": 4096,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	bodyBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return "", err
+	// Execute the graph
+	finalState, execErr := a.graph.Invoke(ctx, initialState)
+	if execErr != nil {
+		return "", nil, nil, execErr
 	}
 
-	url := fmt.Sprintf("%s/messages", c.BaseURL)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return "", err
+	// Handle final state - check fields in addition to status since routing
+	// function state modifications don't persist in langgraphgo
+
+	// Check for clarification needs first
+	if finalState.NeedsClarification && finalState.ClarificationRequest != nil {
+		return "", finalState.ClarificationRequest, nil, nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-dangerous-direct-browser-access", "true")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error (%s): %s", c.Provider, string(body))
+	// Check for confirmation needs
+	if finalState.ActionPreview != nil && (finalState.Confirm == nil || !*finalState.Confirm) {
+		return "请确认以下操作：", nil, finalState.ActionPreview, nil
 	}
 
-	var response struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
+	switch finalState.Status {
+	case workflow.StatusChat:
+		// Non-K8s chat response
+		return finalState.Reply, nil, nil, nil
 
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", err
-	}
+	case workflow.StatusNeedsInfo:
+		// Need clarification
+		return "", finalState.ClarificationRequest, nil, nil
 
-	if len(response.Content) == 0 {
-		return "", fmt.Errorf("empty response")
-	}
+	case workflow.StatusNeedsConfirm:
+		// Need confirmation
+		return "请确认以下操作：", nil, finalState.ActionPreview, nil
 
-	var result strings.Builder
-	for _, block := range response.Content {
-		if block.Type == "text" {
-			result.WriteString(block.Text)
+	case workflow.StatusExecuted:
+		// Successfully executed
+		return finalState.Result, nil, nil, nil
+
+	case workflow.StatusError:
+		// Error occurred
+		if finalState.Error != nil {
+			return "", nil, nil, finalState.Error
 		}
-	}
+		return finalState.Result, nil, nil, nil
 
-	return result.String(), nil
-}
-
-func (c *ConfiguredLLMClient) chatOpenAIFormat(ctx context.Context, prompt string) (string, error) {
-	requestBody := map[string]interface{}{
-		"model": c.ModelID,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	bodyBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return "", err
-	}
-
-	// Determine endpoint based on provider
-	var endpoint string
-	switch c.Provider {
-	case "deepseek":
-		endpoint = c.BaseURL + "/chat/completions"
 	default:
-		endpoint = c.BaseURL + "/chat/completions"
+		// Check for any error or result
+		if finalState.Error != nil {
+			return "", nil, nil, finalState.Error
+		}
+		return finalState.Result, nil, nil, nil
+	}
+}
+
+// SetModel updates the model name.
+// Note: This is a simplified implementation that only updates the model name string.
+// For full model switching functionality, the graph and LLM client need to be recreated.
+func (a *GraphAgent) SetModel(modelName string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.modelName = modelName
+	return nil
+}
+
+// GetModelName returns the current model name.
+// This is an alias for GetModel() for API compatibility.
+func (a *GraphAgent) GetModelName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.modelName
+}
+
+// GetModel returns the current model name.
+func (a *GraphAgent) GetModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.modelName
+}
+
+// ProcessCommand processes a simple command without clarification flow.
+// This is for API compatibility with the existing Agent interface.
+func (a *GraphAgent) ProcessCommand(ctx context.Context, userMsg string) (string, error) {
+	result, _, _, err := a.ProcessCommandWithClarification(ctx, userMsg, nil, nil)
+	return result, err
+}
+
+// GetGraph returns the underlying compiled graph for advanced operations.
+func (a *GraphAgent) GetGraph() *lgg.StateRunnable[workflow.AgentState] {
+	return a.graph
+}
+
+// Ensure GraphAgent implements AgentInterface
+var _ AgentInterface = (*GraphAgent)(nil)
+
+// ============================================================================
+// GraphAgentWithCheckpointer (with session persistence)
+// ============================================================================
+
+// GraphAgentWithCheckpointer wraps the langgraphgo graph with checkpointing support.
+// It provides session persistence for multi-turn conversations.
+type GraphAgentWithCheckpointer struct {
+	graph        *lgg.CheckpointableRunnable[workflow.AgentState]
+	deps         *workflow.Dependencies
+	checkpointer *workflow.CheckpointerManager
+	mu           sync.RWMutex
+	modelName    string
+}
+
+// NewGraphAgentWithCheckpointer creates a new GraphAgent with session persistence.
+func NewGraphAgentWithCheckpointer(k8sClient k8s.Client, llmClient llm.Client, modelName string, checkpointer *workflow.CheckpointerManager) (*GraphAgentWithCheckpointer, error) {
+	deps := &workflow.Dependencies{
+		K8sClient: k8sClient,
+		LLM:       llmClient,
+		ModelName: modelName,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(bodyBytes))
+	compiledGraph, err := workflow.NewK8sWizardGraphWithCheckpointer(deps, checkpointer.GetStore())
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error (%s): %s", c.Provider, string(body))
-	}
-
-	var response struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", err
-	}
-
-	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("empty response")
-	}
-
-	return response.Choices[0].Message.Content, nil
+	return &GraphAgentWithCheckpointer{
+		graph:        compiledGraph,
+		deps:         deps,
+		checkpointer: checkpointer,
+		modelName:    modelName,
+	}, nil
 }
 
-// K8sAction 表示一个 K8s 操作
-type K8sAction struct {
-	Action         string                 `json:"action"`
-	Resource       string                 `json:"resource"`
-	Name           string                 `json:"name"`
-	Namespace      string                 `json:"namespace"`
-	Params         map[string]interface{} `json:"params"`
-	IsK8sOperation bool                   `json:"is_k8s_operation"`
-	Reply          string                 `json:"reply"`
+// ProcessCommandWithClarification processes a command with the clarification flow.
+// The threadID parameter is used for session persistence.
+func (a *GraphAgentWithCheckpointer) ProcessCommandWithClarification(
+	ctx context.Context,
+	userMsg string,
+	formData map[string]interface{},
+	confirm *bool,
+) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error) {
+	return a.ProcessCommandWithClarificationAndThread(ctx, userMsg, formData, confirm, "")
 }
 
-// Agent 是主控制器
-type Agent struct {
-	client    *kubernetes.Clientset
-	llm       LLMClient
-	modelName string
-	mu        sync.RWMutex
+// ProcessCommandWithClarificationAndThread processes a command with the clarification flow and thread ID.
+// The threadID is used for session persistence - same threadID will resume from previous state.
+func (a *GraphAgentWithCheckpointer) ProcessCommandWithClarificationAndThread(
+	ctx context.Context,
+	userMsg string,
+	formData map[string]interface{},
+	confirm *bool,
+	threadID string,
+) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error) {
+	a.mu.RLock()
+	modelName := a.modelName
+	a.mu.RUnlock()
+
+	// Build initial state
+	initialState := workflow.AgentState{
+		UserMessage: userMsg,
+		FormData:    formData,
+		Confirm:     confirm,
+		ThreadID:    threadID,
+		Status:      workflow.StatusPending,
+	}
+	_ = modelName // modelName is currently unused but kept for future use
+
+	var finalState workflow.AgentState
+	var execErr error
+
+	if threadID != "" {
+		// Use thread-aware configuration
+		config := lgg.WithThreadID(threadID)
+		finalState, execErr = a.graph.InvokeWithConfig(ctx, initialState, config)
+	} else {
+		finalState, execErr = a.graph.Invoke(ctx, initialState)
+	}
+
+	if execErr != nil {
+		return "", nil, nil, execErr
+	}
+
+	// Handle final state - check fields in addition to status since routing
+	// function state modifications don't persist in langgraphgo
+
+	// Check for clarification needs first
+	if finalState.NeedsClarification && finalState.ClarificationRequest != nil {
+		return "", finalState.ClarificationRequest, nil, nil
+	}
+
+	// Check for confirmation needs
+	if finalState.ActionPreview != nil && (finalState.Confirm == nil || !*finalState.Confirm) {
+		return "请确认以下操作：", nil, finalState.ActionPreview, nil
+	}
+
+	switch finalState.Status {
+	case workflow.StatusChat:
+		return finalState.Reply, nil, nil, nil
+
+	case workflow.StatusNeedsInfo:
+		return "", finalState.ClarificationRequest, nil, nil
+
+	case workflow.StatusNeedsConfirm:
+		return "请确认以下操作：", nil, finalState.ActionPreview, nil
+
+	case workflow.StatusExecuted:
+		return finalState.Result, nil, nil, nil
+
+	case workflow.StatusError:
+		if finalState.Error != nil {
+			return "", nil, nil, finalState.Error
+		}
+		return finalState.Result, nil, nil, nil
+
+	default:
+		if finalState.Error != nil {
+			return "", nil, nil, finalState.Error
+		}
+		return finalState.Result, nil, nil, nil
+	}
 }
 
-// NewAgent 创建新的 Agent 实例
-func NewAgent() (*Agent, error) {
-	// 加载配置
+// SetModel updates the model name.
+func (a *GraphAgentWithCheckpointer) SetModel(modelName string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.modelName = modelName
+	return nil
+}
+
+// GetModelName returns the current model name.
+func (a *GraphAgentWithCheckpointer) GetModelName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.modelName
+}
+
+// GetModel returns the current model name.
+func (a *GraphAgentWithCheckpointer) GetModel() string {
+	return a.GetModelName()
+}
+
+// ProcessCommand processes a simple command without clarification flow.
+func (a *GraphAgentWithCheckpointer) ProcessCommand(ctx context.Context, userMsg string) (string, error) {
+	result, _, _, err := a.ProcessCommandWithClarification(ctx, userMsg, nil, nil)
+	return result, err
+}
+
+// ClearSession clears the session state for a given thread ID.
+func (a *GraphAgentWithCheckpointer) ClearSession(ctx context.Context, threadID string) error {
+	return a.checkpointer.ClearSession(ctx, threadID)
+}
+
+// GetGraph returns the underlying compiled graph for advanced operations.
+func (a *GraphAgentWithCheckpointer) GetGraph() *lgg.CheckpointableRunnable[workflow.AgentState] {
+	return a.graph
+}
+
+// Close closes the checkpointer store.
+func (a *GraphAgentWithCheckpointer) Close() error {
+	if a.checkpointer != nil {
+		return a.checkpointer.Close()
+	}
+	return nil
+}
+
+// Ensure GraphAgentWithCheckpointer implements AgentInterface
+var _ AgentInterface = (*GraphAgentWithCheckpointer)(nil)
+
+// ============================================================================
+// Factory Functions
+// ============================================================================
+
+// NewGraphAgentFromConfig creates a new GraphAgent with all dependencies initialized from config.
+func NewGraphAgentFromConfig() (*GraphAgent, error) {
+	// Load config
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// 初始化 K8s client
-	var k8sConfig *rest.Config
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig != "" {
-		k8sConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	} else {
-		k8sConfig, err = rest.InClusterConfig()
-	}
+	// Initialize K8s client
+	k8sConfig, err := getK8sConfig()
 	if err != nil {
-		// 如果都失败，尝试默认位置
-		k8sConfig, err = clientcmd.BuildConfigFromFlags("", os.Getenv("HOME")+"/.kube/config")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create k8s config: %w", err)
-		}
+		return nil, err
 	}
 
 	clientset, err := kubernetes.NewForConfig(k8sConfig)
@@ -241,7 +378,73 @@ func NewAgent() (*Agent, error) {
 		return nil, fmt.Errorf("failed to create k8s client: %w", err)
 	}
 
-	// 获取模型配置
+	// Create LLM client
+	llmClient, modelName, err := createLLMClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return NewGraphAgent(k8s.NewClient(clientset), llmClient, modelName)
+}
+
+// NewGraphAgentWithCheckpointerFromConfig creates a new GraphAgent with session persistence.
+// The dataDir parameter specifies where to store checkpoints (empty string uses default).
+func NewGraphAgentWithCheckpointerFromConfig(dataDir string) (*GraphAgentWithCheckpointer, error) {
+	// Load config
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Initialize K8s client
+	k8sConfig, err := getK8sConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create k8s client: %w", err)
+	}
+
+	// Create LLM client
+	llmClient, modelName, err := createLLMClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create checkpointer
+	checkpointer, err := workflow.NewCheckpointerManager(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create checkpointer: %w", err)
+	}
+
+	return NewGraphAgentWithCheckpointer(k8s.NewClient(clientset), llmClient, modelName, checkpointer)
+}
+
+// getK8sConfig initializes and returns the Kubernetes configuration.
+func getK8sConfig() (*rest.Config, error) {
+	var k8sConfig *rest.Config
+	var err error
+
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig != "" {
+		k8sConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		k8sConfig, err = rest.InClusterConfig()
+	}
+	if err != nil {
+		// If both fail, try default location
+		k8sConfig, err = clientcmd.BuildConfigFromFlags("", os.Getenv("HOME")+"/.kube/config")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create k8s config: %w", err)
+		}
+	}
+	return k8sConfig, nil
+}
+
+// createLLMClient creates an LLM client from the configuration.
+func createLLMClient(cfg *config.Config) (llm.Client, string, error) {
 	modelString := cfg.Agents.Defaults.Model.Primary
 	if envModel := os.Getenv("K8S_WIZARD_MODEL"); envModel != "" {
 		modelString = envModel
@@ -249,531 +452,21 @@ func NewAgent() (*Agent, error) {
 
 	provider, modelID, err := cfg.GetModelProvider(modelString)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse model config: %w", err)
+		return nil, "", fmt.Errorf("failed to parse model config: %w", err)
 	}
 
 	providerConfig, ok := cfg.Models.Providers[provider]
 	if !ok {
-		return nil, fmt.Errorf("provider not configured: %s", provider)
+		return nil, "", fmt.Errorf("provider not configured: %s", provider)
 	}
 
-	// 创建 LLM client
-	llm, err := NewConfiguredLLMClient(provider, modelID, providerConfig)
+	llmClient, err := llm.NewClient(provider, modelID, providerConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create LLM client: %w", err)
+		return nil, "", fmt.Errorf("failed to create LLM client: %w", err)
 	}
 
-	modelName := llm.GetModel()
-	fmt.Printf("🤖 使用模型: %s\n", modelName)
+	modelName := llmClient.GetModel()
+	fmt.Printf("🤖 Using model: %s\n", modelName)
 
-	return &Agent{
-		client:    clientset,
-		llm:       llm,
-		modelName: modelName,
-	}, nil
-}
-
-// GetModelName 返回当前使用的模型名称
-func (a *Agent) GetModelName() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.modelName
-}
-
-// SetModel 切换模型
-func (a *Agent) SetModel(modelString string) error {
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	provider, modelID, err := cfg.GetModelProvider(modelString)
-	if err != nil {
-		return fmt.Errorf("failed to parse model config: %w", err)
-	}
-
-	providerConfig, ok := cfg.Models.Providers[provider]
-	if !ok {
-		return fmt.Errorf("provider not configured: %s", provider)
-	}
-
-	// 创建新的 LLM client
-	newLLM, err := NewConfiguredLLMClient(provider, modelID, providerConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create LLM client: %w", err)
-	}
-
-	// 更新 Agent
-	a.mu.Lock()
-	a.llm = newLLM
-	a.modelName = newLLM.GetModel()
-	a.mu.Unlock()
-
-	fmt.Printf("🔄 模型已切换为: %s\n", a.modelName)
-	return nil
-}
-
-// ProcessCommandWithClarification 处理命令，支持澄清流程
-func (a *Agent) ProcessCommandWithClarification(ctx context.Context, userMsg string, formData map[string]interface{}, confirm *bool) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error) {
-	// 1. 调用 LLM 解析用户意图
-	action, err := a.ParseUserIntent(ctx, userMsg)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	fmt.Printf("🔍 LLM 解析结果: action=%s, resource=%s, name=%s, isK8s=%v\n", action.Action, action.Resource, action.Name, action.IsK8sOperation)
-
-	// 2. 如果不是 K8s 操作，直接返回 AI 的回复
-	if !action.IsK8sOperation {
-		return action.Reply, nil, nil, nil
-	}
-
-	// 3. 如果有表单数据，先合并到 action
-	if formData != nil {
-		a.MergeFormData(action, formData)
-		fmt.Printf("🔍 合并 formData 后: name=%s, image=%v, replicas=%v\n", action.Name, action.Params["image"], action.Params["replicas"])
-	}
-
-	// 4. 检查是否需要澄清（合并后再检查）
-	clarReq, needsInfo := a.CheckNeedsClarification(action)
-	fmt.Printf("🔍 检查澄清: needsInfo=%v\n", needsInfo)
-	if needsInfo {
-		return "", clarReq, nil, nil
-	}
-
-	// 5. 生成操作预览
-	preview := a.GenerateActionPreview(action)
-	fmt.Printf("🔍 操作预览: %v\n", preview != nil)
-
-	// 如果无法生成预览，说明操作无效或不支持
-	if preview == nil {
-		return fmt.Sprintf("❓ 抱歉，暂不支持此操作。\n\n**支持的操作:**\n• 部署应用: 部署一个 nginx\n• 查看资源: 查看所有 pod/deployment/service\n• 扩缩容: 把 nginx 扩容到 5 个\n• 删除资源: 删除名为 xxx 的 deployment\n\n**支持的资源:**\n• pod, deployment, service, configmap, secret, ingress, pvc, namespace"), nil, nil, nil
-	}
-
-	// 6. 对于 get 操作（查看），直接执行不需要确认
-	if action.Action == "get" || action.Action == "list" || action.Action == "show" {
-		result, err = a.executeAction(ctx, *action)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		return result, nil, nil, nil
-	}
-
-	// 7. 如果未确认，返回预览等待确认
-	fmt.Printf("🔍 confirm 参数: %v\n", confirm)
-	if confirm == nil || !*confirm {
-		return "请确认以下操作：", nil, preview, nil
-	}
-
-	// 8. 执行操作
-	result, err = a.executeAction(ctx, *action)
-	if err != nil {
-		return "", nil, nil, err
-	}
-
-	return result, nil, nil, nil
-}
-
-// ProcessCommand 处理用户命令
-func (a *Agent) ProcessCommand(ctx context.Context, userMsg string) (string, error) {
-	// 调用 LLM 解析用户意图
-	prompt := fmt.Sprintf(`你是一个 Kubernetes 集群操作助手。你的任务是理解用户的自然语言指令，并将其转换为具体的 K8s 操作。
-
-用户指令: %s
-
-请分析这个指令并返回对应的 K8s 操作 JSON。
-
-支持的操作类型：
-1. create/deploy - 创建部署
-2. get/list/show - 查看资源
-3. scale - 扩缩容
-4. delete/remove - 删除资源
-
-支持的资源类型：
-- pod
-- deployment
-- service
-
-返回 JSON 格式（只返回 JSON，不要其他文字）:
-{
-  "action": "create|get|scale|delete",
-  "resource": "pod|deployment|service",
-  "name": "资源名称",
-  "namespace": "命名空间（默认 default）",
-  "params": {
-    "image": "镜像地址（创建时需要）",
-    "replicas": 副本数（数字）
-  }
-}
-
-示例：
-用户: "部署一个 nginx，3个副本"
-返回: {"action": "create", "resource": "deployment", "name": "nginx", "namespace": "default", "params": {"image": "nginx:latest", "replicas": 3}}
-
-用户: "查看所有 pod"
-返回: {"action": "get", "resource": "pod", "name": "", "namespace": "default", "params": {}}
-
-用户: "把 nginx 扩容到 5 个副本"
-返回: {"action": "scale", "resource": "deployment", "name": "nginx", "namespace": "default", "params": {"replicas": 5}}
-
-用户: "删除名为 test 的 pod"
-返回: {"action": "delete", "resource": "pod", "name": "test", "namespace": "default", "params": {}}`, userMsg)
-
-
-	a.mu.RLock()
-	llm := a.llm
-	a.mu.RUnlock()
-
-	llmOutput, err := llm.Chat(ctx, prompt)
-	if err != nil {
-		return "", fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	if llmOutput == "" {
-		return "", fmt.Errorf("empty LLM response")
-	}
-
-	// 清理 markdown 格式
-	llmOutput = cleanMarkdownJSON(llmOutput)
-
-	// 解析 LLM 返回的 JSON
-	var action K8sAction
-	if err := json.Unmarshal([]byte(llmOutput), &action); err != nil {
-		return "", fmt.Errorf("failed to parse LLM response: %w\nLLM output: %s", err, llmOutput)
-	}
-
-	// 执行 K8s 操作
-	result, err := a.executeAction(ctx, action)
-	if err != nil {
-		return "", err
-	}
-
-	return result, nil
-}
-
-// executeAction 执行具体的 K8s 操作
-func (a *Agent) executeAction(ctx context.Context, action K8sAction) (string, error) {
-	namespace := action.Namespace
-	// 对于非查看操作，空命名空间默认为 default
-	// 对于查看操作，空命名空间表示查询所有命名空间
-	if namespace == "" && action.Action != "get" && action.Action != "list" && action.Action != "show" {
-		namespace = "default"
-	}
-
-	switch action.Action {
-	case "create", "deploy":
-		return a.createDeployment(ctx, namespace, action)
-	case "get", "list", "show":
-		return a.getResources(ctx, namespace, action)
-	case "scale":
-		return a.scaleDeployment(ctx, namespace, action)
-	case "delete", "remove":
-		return a.deleteResource(ctx, namespace, action)
-	default:
-		return "", fmt.Errorf("不支持的操作: %s", action.Action)
-	}
-}
-
-// createDeployment 创建 Deployment
-func (a *Agent) createDeployment(ctx context.Context, namespace string, action K8sAction) (string, error) {
-	image, _ := action.Params["image"].(string)
-	if image == "" {
-		image = action.Name + ":latest"
-	}
-
-	replicas := int32(3)
-	if r, ok := action.Params["replicas"].(float64); ok {
-		replicas = int32(r)
-	}
-
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: action.Name,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": action.Name,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": action.Name,
-					},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  action.Name,
-							Image: image,
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: 80,
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	created, err := a.client.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("创建 deployment 失败: %w", err)
-	}
-
-	return fmt.Sprintf("✓ 已创建 Deployment %s/%s，副本数: %d，镜像: %s", namespace, created.Name, *created.Spec.Replicas, image), nil
-}
-
-// getResources 获取资源
-func (a *Agent) getResources(ctx context.Context, namespace string, action K8sAction) (string, error) {
-	// 判断是否查询所有命名空间
-	allNamespaces := namespace == ""
-
-	switch action.Resource {
-	case "pod":
-		pods, err := a.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 pod 列表失败: %w", err)
-		}
-		if len(pods.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 Pod", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 Pod", namespace), nil
-		}
-		result := fmt.Sprintf("📦 集群中的 Pod (共 %d 个):\n", len(pods.Items))
-		for _, pod := range pods.Items {
-			age := pod.CreationTimestamp.Format("2006-01-02 15:04")
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (%s) - %s\n", pod.Namespace, pod.Name, pod.Status.Phase, age)
-			} else {
-				result += fmt.Sprintf("  • %s (%s) - %s\n", pod.Name, pod.Status.Phase, age)
-			}
-		}
-		return result, nil
-
-	case "deployment", "deploy":
-		deps, err := a.client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 deployment 列表失败: %w", err)
-		}
-		if len(deps.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 Deployment", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 Deployment", namespace), nil
-		}
-		result := fmt.Sprintf("🚀 集群中的 Deployment (共 %d 个):\n", len(deps.Items))
-		for _, dep := range deps.Items {
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (副本: %d/%d)\n", dep.Namespace, dep.Name, dep.Status.ReadyReplicas, dep.Status.Replicas)
-			} else {
-				result += fmt.Sprintf("  • %s (副本: %d/%d)\n", dep.Name, dep.Status.ReadyReplicas, dep.Status.Replicas)
-			}
-		}
-		return result, nil
-
-	case "service", "svc":
-		svcs, err := a.client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 service 列表失败: %w", err)
-		}
-		if len(svcs.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 Service", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 Service", namespace), nil
-		}
-		result := fmt.Sprintf("🔗 集群中的 Service (共 %d 个):\n", len(svcs.Items))
-		for _, svc := range svcs.Items {
-			port := "-"
-			if len(svc.Spec.Ports) > 0 {
-				port = fmt.Sprintf("%d", svc.Spec.Ports[0].Port)
-			}
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (类型: %s, 端口: %s)\n", svc.Namespace, svc.Name, svc.Spec.Type, port)
-			} else {
-				result += fmt.Sprintf("  • %s (类型: %s, 端口: %s)\n", svc.Name, svc.Spec.Type, port)
-			}
-		}
-		return result, nil
-
-	case "configmap", "cm":
-		cms, err := a.client.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 configmap 列表失败: %w", err)
-		}
-		if len(cms.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 ConfigMap", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 ConfigMap", namespace), nil
-		}
-		result := fmt.Sprintf("📋 集群中的 ConfigMap (共 %d 个):\n", len(cms.Items))
-		for _, cm := range cms.Items {
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (%d 个键)\n", cm.Namespace, cm.Name, len(cm.Data))
-			} else {
-				result += fmt.Sprintf("  • %s (%d 个键)\n", cm.Name, len(cm.Data))
-			}
-		}
-		return result, nil
-
-	case "secret":
-		secrets, err := a.client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 secret 列表失败: %w", err)
-		}
-		if len(secrets.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 Secret", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 Secret", namespace), nil
-		}
-		result := fmt.Sprintf("🔒 集群中的 Secret (共 %d 个):\n", len(secrets.Items))
-		for _, secret := range secrets.Items {
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (类型: %s)\n", secret.Namespace, secret.Name, secret.Type)
-			} else {
-				result += fmt.Sprintf("  • %s (类型: %s)\n", secret.Name, secret.Type)
-			}
-		}
-		return result, nil
-
-	case "ingress":
-		ingresses, err := a.client.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 ingress 列表失败: %w", err)
-		}
-		if len(ingresses.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 Ingress", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 Ingress", namespace), nil
-		}
-		result := fmt.Sprintf("🌐 集群中的 Ingress (共 %d 个):\n", len(ingresses.Items))
-		for _, ing := range ingresses.Items {
-			host := "-"
-			if len(ing.Spec.Rules) > 0 && ing.Spec.Rules[0].Host != "" {
-				host = ing.Spec.Rules[0].Host
-			}
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (主机: %s)\n", ing.Namespace, ing.Name, host)
-			} else {
-				result += fmt.Sprintf("  • %s (主机: %s)\n", ing.Name, host)
-			}
-		}
-		return result, nil
-
-	case "pvc", "persistentvolumeclaim":
-		pvcs, err := a.client.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 pvc 列表失败: %w", err)
-		}
-		if len(pvcs.Items) == 0 {
-			if allNamespaces {
-				return "集群中没有 PVC", nil
-			}
-			return fmt.Sprintf("命名空间 %s 中没有 PVC", namespace), nil
-		}
-		result := fmt.Sprintf("💾 集群中的 PVC (共 %d 个):\n", len(pvcs.Items))
-		for _, pvc := range pvcs.Items {
-			if allNamespaces {
-				result += fmt.Sprintf("  • [%s] %s (状态: %s, 大小: %s)\n", pvc.Namespace, pvc.Name, pvc.Status.Phase, pvc.Spec.Resources.Requests.Storage())
-			} else {
-				result += fmt.Sprintf("  • %s (状态: %s, 大小: %s)\n", pvc.Name, pvc.Status.Phase, pvc.Spec.Resources.Requests.Storage())
-			}
-		}
-		return result, nil
-
-	case "namespace", "namespaces", "ns":
-		nss, err := a.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 namespace 列表失败: %w", err)
-		}
-		result := fmt.Sprintf("📁 集群中的 Namespace (共 %d 个):\n", len(nss.Items))
-		for _, ns := range nss.Items {
-			result += fmt.Sprintf("  • %s (状态: %s)\n", ns.Name, ns.Status.Phase)
-		}
-		return result, nil
-
-	case "node", "nodes":
-		nodes, err := a.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return "", fmt.Errorf("获取 node 列表失败: %w", err)
-		}
-		result := fmt.Sprintf("🖥️ 集群中的 Node (共 %d 个):\n", len(nodes.Items))
-		for _, node := range nodes.Items {
-			ready := "NotReady"
-			for _, cond := range node.Status.Conditions {
-				if cond.Type == "Ready" {
-					if cond.Status == "True" {
-						ready = "Ready"
-					}
-					break
-				}
-			}
-			result += fmt.Sprintf("  • %s (%s)\n", node.Name, ready)
-		}
-		return result, nil
-
-	default:
-		return "", fmt.Errorf("不支持的资源类型: %s。支持的资源: pod, deployment, service, configmap, secret, ingress, pvc, namespace, node", action.Resource)
-	}
-}
-// scaleDeployment 扩缩容 Deployment
-func (a *Agent) scaleDeployment(ctx context.Context, namespace string, action K8sAction) (string, error) {
-	replicas := int32(1)
-	if r, ok := action.Params["replicas"].(float64); ok {
-		replicas = int32(r)
-	}
-
-	// 获取当前 deployment
-	dep, err := a.client.AppsV1().Deployments(namespace).Get(ctx, action.Name, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("获取 deployment 失败: %w", err)
-	}
-
-	currentReplicas := *dep.Spec.Replicas
-
-	// 更新副本数
-	dep.Spec.Replicas = &replicas
-
-	_, err = a.client.AppsV1().Deployments(namespace).Update(ctx, dep, metav1.UpdateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("更新 deployment 失败: %w", err)
-	}
-
-	return fmt.Sprintf("✓ 已将 Deployment %s/%s 从 %d 个副本扩缩容到 %d 个副本", namespace, action.Name, currentReplicas, replicas), nil
-}
-
-// deleteResource 删除资源
-func (a *Agent) deleteResource(ctx context.Context, namespace string, action K8sAction) (string, error) {
-	switch action.Resource {
-	case "pod":
-		err := a.client.CoreV1().Pods(namespace).Delete(ctx, action.Name, metav1.DeleteOptions{})
-		if err != nil {
-			return "", fmt.Errorf("删除 pod 失败: %w", err)
-		}
-		return fmt.Sprintf("✓ 已删除 Pod %s/%s", namespace, action.Name), nil
-	case "deployment":
-		err := a.client.AppsV1().Deployments(namespace).Delete(ctx, action.Name, metav1.DeleteOptions{})
-		if err != nil {
-			return "", fmt.Errorf("删除 deployment 失败: %w", err)
-		}
-		return fmt.Sprintf("✓ 已删除 Deployment %s/%s", namespace, action.Name), nil
-	default:
-		return "", fmt.Errorf("不支持的资源类型: %s", action.Resource)
-	}
-}
-
-// cleanMarkdownJSON 清理 markdown 格式的 JSON
-func cleanMarkdownJSON(text string) string {
-	text = strings.TrimPrefix(text, "```json")
-	text = strings.TrimPrefix(text, "```")
-	text = strings.TrimSuffix(text, "```")
-	return strings.TrimSpace(text)
+	return llmClient, modelName, nil
 }
