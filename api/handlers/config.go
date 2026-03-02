@@ -13,10 +13,10 @@ import (
 
 // ConfigHandler 处理配置相关请求
 type ConfigHandler struct {
-	agent *agent.Agent
+	agent agent.AgentInterface
 }
 
-func NewConfigHandler(a *agent.Agent) *ConfigHandler {
+func NewConfigHandler(a agent.AgentInterface) *ConfigHandler {
 	return &ConfigHandler{agent: a}
 }
 

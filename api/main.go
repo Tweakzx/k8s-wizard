@@ -1,24 +1,51 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"k8s-wizard/api/handlers"
 	"k8s-wizard/api/middleware"
 	"k8s-wizard/pkg/agent"
 	"k8s-wizard/pkg/config"
+	"k8s-wizard/pkg/logger"
 )
 
 func main() {
 	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("❌ 加载配置失败: %v", err)
+		fmt.Fprintf(os.Stderr, "❌ 加载配置失败: %v\n", err)
+		os.Exit(1)
 	}
+
+	// 初始化日志
+	logCfg := &logger.Config{
+		EnableFile: cfg.Log.EnableFile,
+		MaxSize:    cfg.Log.MaxSize,
+		MaxBackups: cfg.Log.MaxBackups,
+		MaxAge:     cfg.Log.MaxAge,
+		Compress:   cfg.Log.Compress,
+		Level:      cfg.Log.Level,
+		Format:     cfg.Log.Format,
+		Console:    cfg.Log.Console,
+	}
+	if cfg.Log.FilePath != "" {
+		logCfg.FilePath = cfg.Log.FilePath
+	}
+
+	log, err := logger.Init(logCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 初始化日志失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer log.Close()
 
 	// 使用配置中的端口，允许环境变量覆盖
 	port := os.Getenv("PORT")
@@ -32,17 +59,28 @@ func main() {
 	// 设置 Gin 为 Release 模式
 	gin.SetMode(gin.ReleaseMode)
 
-	// 创建 Agent 实例
-	a, err := agent.NewAgent()
+	logger.Info("🚀 启动 K8s Wizard API Server",
+		"port", port,
+		"logFile", logCfg.FilePath,
+		"logLevel", logCfg.Level,
+	)
+
+	// 创建 GraphAgent 实例
+	a, err := agent.NewGraphAgentFromConfig()
 	if err != nil {
-		log.Fatalf("❌ 创建 Agent 失败: %v", err)
+		logger.Error("❌ 创建 GraphAgent 失败", "error", err)
+		os.Exit(1)
 	}
 
-	// 创建路由
-	r := gin.Default()
+	logger.Info("🤖 Agent 初始化完成", "model", a.GetModelName())
 
-	// 添加中间件
+	// 创建路由
+	r := gin.New()
+
+	// 使用自定义日志中间件
+	r.Use(gin.Recovery())
 	r.Use(middleware.CORS())
+	r.Use(requestLogger())
 
 	// 健康检查
 	r.GET("/health", handlers.HealthCheck)
@@ -67,23 +105,76 @@ func main() {
 	r.Static("/assets", "./web/dist/assets")
 	r.StaticFile("/", "./web/dist/index.html")
 
-	// 启动服务器
-	log.Printf("🚀 K8s Wizard API Server 启动在端口 %s", port)
-	log.Printf("🤖 当前模型: %s", a.GetModelName())
-	log.Printf("📡 API 端点:")
-	log.Printf("   GET  /health            - 健康检查")
-	log.Printf("   POST /api/chat          - 聊天接口")
-	log.Printf("   GET  /api/resources     - 获取资源列表")
-	log.Printf("   GET  /api/config/model   - 获取当前模型信息")
-	log.Printf("   PUT  /api/config/model   - 切换模型")
-	log.Printf("   GET  /api/config        - 获取完整配置")
+	// 记录 API 端点
+	logger.Info("📡 API 端点已注册",
+		"endpoints", []string{
+			"GET  /health",
+			"POST /api/chat",
+			"GET  /api/resources",
+			"GET  /api/config/model",
+			"PUT  /api/config/model",
+			"GET  /api/config",
+		},
+	)
 
 	bindAddr := cfg.API.Host + ":" + port
 	if cfg.API.Host == "" {
 		bindAddr = ":" + port
 	}
 
-	if err := r.Run(bindAddr); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("❌ 启动服务器失败: %v", err)
+	// 启动服务器（优雅关闭）
+	srv := &http.Server{
+		Addr:    bindAddr,
+		Handler: r,
+	}
+
+	// 在 goroutine 中启动服务器
+	go func() {
+		logger.Info("🌐 服务器启动", "address", bindAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("❌ 启动服务器失败", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// 等待中断信号以优雅关闭服务器
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Info("🛑 正在关闭服务器...")
+
+	// 给服务器 5 秒时间完成当前处理的请求
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("❌ 服务器强制关闭", "error", err)
+	}
+
+	logger.Info("✅ 服务器已退出")
+}
+
+// requestLogger 创建请求日志中间件
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		query := c.Request.URL.RawQuery
+
+		c.Next()
+
+		latency := time.Since(start)
+		status := c.Writer.Status()
+
+		// 记录请求
+		logger.Info("HTTP 请求",
+			"method", c.Request.Method,
+			"path", path,
+			"query", query,
+			"status", status,
+			"latency", latency.String(),
+			"clientIP", c.ClientIP(),
+		)
 	}
 }

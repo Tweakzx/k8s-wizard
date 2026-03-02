@@ -14,10 +14,10 @@ import (
 
 // ChatHandler 处理聊天请求
 type ChatHandler struct {
-	agent *agent.Agent
+	agent agent.AgentInterface
 }
 
-func NewChatHandler(a *agent.Agent) *ChatHandler {
+func NewChatHandler(a agent.AgentInterface) *ChatHandler {
 	return &ChatHandler{agent: a}
 }
 

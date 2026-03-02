@@ -14,10 +14,10 @@ import (
 
 // GetResources 获取资源列表
 type ResourcesHandler struct {
-	agent *agent.Agent
+	agent agent.AgentInterface
 }
 
-func NewResourcesHandler(a *agent.Agent) *ResourcesHandler {
+func NewResourcesHandler(a agent.AgentInterface) *ResourcesHandler {
 	return &ResourcesHandler{agent: a}
 }
 
