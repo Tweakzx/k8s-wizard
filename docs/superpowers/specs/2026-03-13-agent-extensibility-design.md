@@ -407,7 +407,6 @@ func (t *operationTool) Execute(ctx context.Context, args map[string]interface{}
 
 ```go
 // pkg/k8s/handlers/deployment.go
-// pkg/k8s/yaml.go (helper for YAML generation)
 
 package handlers
 
@@ -664,6 +663,451 @@ spec:
         ports:
         - containerPort: 80
 `, name, namespace, replicas, name, name, image)
+}
+```
+
+#### Pod Handler Implementation
+
+```go
+// pkg/k8s/handlers/pod.go
+
+package handlers
+
+import (
+    "context"
+    "fmt"
+    corev1 "k8s.io/api/core/v1"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/client-go/kubernetes"
+    "k8s-wizard/pkg/tools"
+)
+
+type PodHandler struct {
+    *BaseHandler
+}
+
+func NewPodHandler(clientset kubernetes.Interface) *PodHandler {
+    base := NewBaseHandler(clientset, "pod")
+    base.ops = []Operation{
+        {
+            Name:        "get",
+            Method:      "get",
+            DangerLevel: tools.DangerNone,
+            Description: "List pods in a namespace",
+            Params: []Param{
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+            },
+        },
+        {
+            Name:        "describe",
+            Method:      "describe",
+            DangerLevel: tools.DangerNone,
+            Description: "Get detailed pod information",
+            Params: []Param{
+                {Key: "name", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+            },
+        },
+        {
+            Name:        "delete",
+            Method:      "delete",
+            DangerLevel: tools.DangerMedium,
+            Description: "Delete a pod",
+            Params: []Param{
+                {Key: "name", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+            },
+        },
+    }
+    return &PodHandler{BaseHandler: base}
+}
+
+func (h *PodHandler) get(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    ns, _ := args["namespace"].(string)
+    pods, err := h.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("get pods failed: %w", err)
+    }
+
+    if len(pods.Items) == 0 {
+        if ns == "" {
+            return tools.Result{Success: true, Message: "No pods found in cluster"}, nil
+        }
+        return tools.Result{Success: true, Message: fmt.Sprintf("No pods found in namespace %s", ns)}, nil
+    }
+
+    var sb strings.Builder
+    sb.WriteString(fmt.Sprintf("📦 Pods (%d):\n", len(pods.Items)))
+    for _, pod := range pods.Items {
+        status := string(pod.Status.Phase)
+        sb.WriteString(fmt.Sprintf("  • %s (status: %s, age: %s)\n", pod.Name, status, pod.CreationTimestamp.Format("2006-01-02")))
+    }
+
+    return tools.Result{Success: true, Message: sb.String()}, nil
+}
+
+func (h *PodHandler) describe(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    name := args["name"].(string)
+    ns, _ := args["namespace"].(string)
+
+    pod, err := h.clientset.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("get pod failed: %w", err)
+    }
+
+    var sb strings.Builder
+    sb.WriteString(fmt.Sprintf("📦 Pod: %s/%s\n", ns, name))
+    sb.WriteString(fmt.Sprintf("Status: %s\n", pod.Status.Phase))
+    sb.WriteString(fmt.Sprintf("Node: %s\n", pod.Spec.NodeName))
+    sb.WriteString(fmt.Sprintf("IP: %s\n", pod.Status.PodIP))
+    sb.WriteString("\nContainers:\n")
+    for _, c := range pod.Spec.Containers {
+        sb.WriteString(fmt.Sprintf("  - %s: %s\n", c.Name, c.Image))
+    }
+
+    return tools.Result{Success: true, Message: sb.String()}, nil
+}
+
+func (h *PodHandler) delete(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    name := args["name"].(string)
+    ns, _ := args["namespace"].(string)
+
+    err := h.clientset.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("delete pod failed: %w", err)
+    }
+
+    return tools.Result{
+        Success:     true,
+        Message:     fmt.Sprintf("✓ Deleted Pod %s/%s", ns, name),
+        DangerLevel: tools.DangerMedium,
+        NeedsConfirm: true,
+    }, nil
+}
+```
+
+#### Service Handler Implementation
+
+```go
+// pkg/k8s/handlers/service.go
+
+package handlers
+
+import (
+    "context"
+    "fmt"
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/apimachinery/pkg/util/intstr"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/client-go/kubernetes"
+    "k8s-wizard/pkg/tools"
+)
+
+type ServiceHandler struct {
+    *BaseHandler
+}
+
+func NewServiceHandler(clientset kubernetes.Interface) *ServiceHandler {
+    base := NewBaseHandler(clientset, "service")
+    base.ops = []Operation{
+        {
+            Name:        "create",
+            Method:      "create",
+            DangerLevel: tools.DangerLow,
+            Description: "Create a service",
+            Params: []Param{
+                {Key: "name", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+                {Key: "port", Type: "int", Required: false, Default: 80},
+                {Key: "type", Type: "string", Required: false, Default: "ClusterIP"},
+            },
+        },
+        {
+            Name:        "get",
+            Method:      "get",
+            DangerLevel: tools.DangerNone,
+            Description: "List services",
+            Params: []Param{
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+            },
+        },
+        {
+            Name:        "delete",
+            Method:      "delete",
+            DangerLevel: tools.DangerMedium,
+            Description: "Delete a service",
+            Params: []Param{
+                {Key: "name", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+            },
+        },
+    }
+    return &ServiceHandler{BaseHandler: base}
+}
+
+func (h *ServiceHandler) create(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    name := args["name"].(string)
+    ns, _ := args["namespace"].(string)
+    port := int32(args["port"].(int))
+    svcType, _ := args["type"].(string)
+
+    service := &corev1.Service{
+        ObjectMeta: metav1.ObjectMeta{
+            Name:      name,
+            Namespace: ns,
+        },
+        Spec: corev1.ServiceSpec{
+            Type: corev1.ServiceType(svcType),
+            Ports: []corev1.ServicePort{
+                {Port: port, TargetPort: intstr.FromInt(int(port))},
+            },
+            Selector: map[string]string{"app": name},
+        },
+    }
+
+    _, err := h.clientset.CoreV1().Services(ns).Create(ctx, service, metav1.CreateOptions{})
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("create service failed: %w", err)
+    }
+
+    return tools.Result{
+        Success: true,
+        Message: fmt.Sprintf("✓ Created Service %s/%s (type: %s, port: %d)", ns, name, svcType, port),
+    }, nil
+}
+
+func (h *ServiceHandler) get(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    ns, _ := args["namespace"].(string)
+    services, err := h.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("get services failed: %w", err)
+    }
+
+    var sb strings.Builder
+    sb.WriteString(fmt.Sprintf("🔌 Services (%d):\n", len(services.Items)))
+    for _, svc := range services.Items {
+        sb.WriteString(fmt.Sprintf("  • %s (type: %s, clusterIP: %s)\n", svc.Name, svc.Spec.Type, svc.Spec.ClusterIP))
+    }
+
+    return tools.Result{Success: true, Message: sb.String()}, nil
+}
+
+func (h *ServiceHandler) delete(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    name := args["name"].(string)
+    ns, _ := args["namespace"].(string)
+
+    err := h.clientset.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("delete service failed: %w", err)
+    }
+
+    return tools.Result{
+        Success: true,
+        Message: fmt.Sprintf("✓ Deleted Service %s/%s", ns, name),
+        DangerLevel: tools.DangerMedium,
+        NeedsConfirm: true,
+    }, nil
+}
+```
+
+#### Logs Handler Implementation
+
+```go
+// pkg/k8s/handlers/logs.go
+
+package handlers
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/client-go/kubernetes"
+    "k8s-wizard/pkg/tools"
+)
+
+type LogsHandler struct {
+    *BaseHandler
+}
+
+func NewLogsHandler(clientset kubernetes.Interface) *LogsHandler {
+    base := NewBaseHandler(clientset, "logs")
+    base.ops = []Operation{
+        {
+            Name:        "get",
+            Method:      "get",
+            DangerLevel: tools.DangerNone,
+            Description: "Get pod logs",
+            Params: []Param{
+                {Key: "pod", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+                {Key: "tail", Type: "int", Required: false, Default: 100},
+            },
+        },
+    }
+    return &LogsHandler{BaseHandler: base}
+}
+
+func (h *LogsHandler) get(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    pod := args["pod"].(string)
+    ns, _ := args["namespace"].(string)
+    tail := int64(args["tail"].(int))
+
+    req := h.clientset.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{
+        TailLines: &tail,
+    })
+
+    logs, err := req.Stream(ctx)
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("get logs failed: %w", err)
+    }
+    defer logs.Close()
+
+    buf := new(bytes.Buffer)
+    if _, err := buf.ReadFrom(logs); err != nil {
+        return tools.Result{}, fmt.Errorf("read logs failed: %w", err)
+    }
+
+    return tools.Result{
+        Success: true,
+        Message: fmt.Sprintf("📋 Logs from %s/%s:\n%s", ns, pod, buf.String()),
+    }, nil
+}
+```
+
+#### Exec Handler Implementation
+
+```go
+// pkg/k8s/handlers/exec.go
+
+package handlers
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/client-go/kubernetes"
+    "k8s.io/client-go/rest"
+    "k8s.io/client-go/tools/remotecommand"
+    "k8s.io/client-go/util/exec"
+    "k8s.io/client-go/util/homedir"
+    "k8s.io/client-go/util/keyutil"
+    "os"
+    "path/filepath"
+    "k8s.io/client-go/tools/clientcmd"
+    "k8s.io/apimachinery/pkg/runtime"
+    "k8s.io/client-go/kubernetes/scheme"
+    "k8s-wizard/pkg/tools"
+)
+
+type ExecHandler struct {
+    *BaseHandler
+    config *rest.Config
+}
+
+func NewExecHandler(clientset kubernetes.Interface) *ExecHandler {
+    base := NewBaseHandler(clientset, "exec")
+
+    // Load kubeconfig for exec operations
+    var config *rest.Config
+    var err error
+
+    kubeconfig := os.Getenv("KUBECONFIG")
+    if kubeconfig == "" {
+        home := homedir.HomeDir()
+        kubeconfig = filepath.Join(home, ".kube", "config")
+    }
+
+    config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+    if err != nil {
+        config, err = rest.InClusterConfig()
+    }
+
+    base.ops = []Operation{
+        {
+            Name:        "execute",
+            Method:      "execute",
+            DangerLevel: tools.DangerMedium,
+            Description: "Execute command in pod",
+            Params: []Param{
+                {Key: "pod", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+                {Key: "command", Type: "string", Required: true},
+                {Key: "container", Type: "string", Required: false},
+            },
+        },
+    }
+    return &ExecHandler{BaseHandler: base, config: config}
+}
+    *BaseHandler
+}
+
+func NewExecHandler(clientset kubernetes.Interface) *ExecHandler {
+    base := NewBaseHandler(clientset, "exec")
+    base.ops = []Operation{
+        {
+            Name:        "execute",
+            Method:      "execute",
+            DangerLevel: tools.DangerMedium,
+            Description: "Execute command in pod",
+            Params: []Param{
+                {Key: "pod", Type: "string", Required: true},
+                {Key: "namespace", Type: "string", Required: false, Default: "default"},
+                {Key: "command", Type: "string", Required: true},
+                {Key: "container", Type: "string", Required: false},
+            },
+        },
+    }
+    return &ExecHandler{BaseHandler: base}
+}
+
+func (h *ExecHandler) execute(ctx context.Context, args map[string]interface{}) (tools.Result, error) {
+    pod := args["pod"].(string)
+    ns, _ := args["namespace"].(string)
+    command := args["command"].(string)
+    container, _ := args["container"].(string)
+
+    // Build exec request
+    execOptions := &corev1.PodExecOptions{
+        Command:   []string{"sh", "-c", command},
+        Stdout:    true,
+        Stderr:    true,
+        Container: container,
+    }
+
+    req := h.clientset.CoreV1().RESTClient().Post().
+        Resource("pods").
+        Namespace(ns).
+        Name(pod).
+        SubResource("exec").
+        VersionedParams(execOptions, scheme.ParameterCodec)
+
+    executor, err := remotecommand.NewSPDYExecutor(h.config, "POST", req.URL())
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("create executor failed: %w", err)
+    }
+
+    var stdout, stderr bytes.Buffer
+    err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+        Stdout: &stdout,
+        Stderr: &stderr,
+    })
+    if err != nil {
+        return tools.Result{}, fmt.Errorf("exec failed: %w", err)
+    }
+
+    output := stdout.String()
+    if stderr.String() != "" {
+        output += "\nStderr:\n" + stderr.String()
+    }
+
+    return tools.Result{
+        Success: true,
+        Message: fmt.Sprintf("⚡ Exec in %s/%s:\n%s", ns, pod, output),
+        DangerLevel: tools.DangerMedium,
+        NeedsConfirm: true,
+    }, nil
 }
 ```
 
@@ -1120,6 +1564,56 @@ func (g *ExecSubGraph) Build(deps *Dependencies) (*lgg.StateRunnable[AgentState]
     return sub.Compile()
 }
 
+// DiagnosticsSubGraph implements comprehensive diagnostics workflow.
+type DiagnosticsSubGraph struct{}
+
+func NewDiagnosticsSubGraph() *DiagnosticsSubGraph {
+    return &DiagnosticsSubGraph{}
+}
+
+func (g *DiagnosticsSubGraph) Name() string {
+    return "diagnostics"
+}
+
+func (g *DiagnosticsSubGraph) Entry() string {
+    return "validate_target"
+}
+
+func (g *DiagnosticsSubGraph) Exit() string {
+    return lgg.END
+}
+
+func (g *DiagnosticsSubGraph) Build(deps *Dependencies) (*lgg.StateRunnable[AgentState], error) {
+    sub := lgg.NewStateGraph[AgentState]()
+
+    // Add nodes
+    sub.AddNode("validate_target", "Validate diagnostic target",
+        MakeValidateDiagnosticTargetNode())
+    sub.AddNode("check_pod_status", "Check pod status",
+        MakeCheckPodStatusNode(deps.K8sClient))
+    sub.AddNode("check_events", "Check recent events",
+        MakeCheckEventsNode(deps.K8sClient))
+    sub.AddNode("check_logs", "Check pod logs",
+        MakeCheckLogsNode(deps.K8sClient))
+    sub.AddNode("check_resources", "Check resource usage",
+        MakeCheckResourcesNode(deps.K8sClient))
+    sub.AddNode("compile_report", "Compile diagnostic report",
+        MakeCompileDiagnosticReportNode())
+
+    // Set entry
+    sub.SetEntryPoint("validate_target")
+
+    // Add edges
+    sub.AddEdge("validate_target", "check_pod_status")
+    sub.AddEdge("check_pod_status", "check_events")
+    sub.AddEdge("check_events", "check_logs")
+    sub.AddEdge("check_logs", "check_resources")
+    sub.AddEdge("check_resources", "compile_report")
+
+    // Compile
+    return sub.Compile()
+}
+
 // Sub-Graph Manager
 
 // pkg/workflow/subgraph_manager.go
@@ -1172,6 +1666,7 @@ func (m *SubGraphManager) InitializeStandardSubGraphs(deps *Dependencies) error 
     subgraphs := []SubGraph{
         NewLogsSubGraph(),
         NewExecSubGraph(),
+        NewDiagnosticsSubGraph(),
     }
 
     for _, sg := range subgraphs {
@@ -1260,6 +1755,15 @@ func MakeGetLogsNode(client k8s.Client) NodeFunc {
 ```go
 // pkg/workflow/routing.go (additions)
 
+import (
+    "context"
+    "fmt"
+    "strings"
+    corev1 "k8s.io/api/core/v1"
+    lgg "github.com/smallnest/langgraphgo/graph"
+    "k8s-wizard/pkg/k8s"
+)
+
 // buildToolArgs converts K8sAction to tool arguments.
 func buildToolArgs(action *K8sAction) map[string]interface{} {
     args := make(map[string]interface{})
@@ -1312,6 +1816,155 @@ func RouteAfterCommandConfirm(ctx context.Context, state AgentState) string {
     }
     return "execute_command"
 }
+
+// Diagnostic Sub-Graph Nodes
+
+// MakeValidateDiagnosticTargetNode validates diagnostic target parameters.
+func MakeValidateDiagnosticTargetNode() NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        if state.Action == nil {
+            return state, nil
+        }
+
+        // Check required parameters
+        if state.Action.Name == "" {
+            state.Error = fmt.Errorf("pod name is required for diagnostics")
+            state.Status = StatusError
+            return state, nil
+        }
+
+        return state, nil
+    }
+}
+
+// MakeCheckPodStatusNode checks pod status.
+func MakeCheckPodStatusNode(client k8s.Client) NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        name := state.Action.Name
+        ns := state.Action.Namespace
+        if ns == "" {
+            ns = "default"
+        }
+
+        pod, err := client.GetPod(ctx, ns, name)
+        if err != nil {
+            state.Error = err
+            state.Status = StatusError
+            return state, nil
+        }
+
+        var sb strings.Builder
+        sb.WriteString(fmt.Sprintf("Pod Status: %s\n", string(pod.Status.Phase)))
+        sb.WriteString(fmt.Sprintf("Pod IP: %s\n", pod.Status.PodIP))
+        sb.WriteString(fmt.Sprintf("Node: %s\n", pod.Spec.NodeName))
+        sb.WriteString(fmt.Sprintf("Ready: %d/%d\n",
+            countReadyContainers(pod.Status.ContainerStatuses),
+            len(pod.Spec.Containers)))
+
+        state.Result = sb.String()
+        return state, nil
+    }
+}
+
+// MakeCheckEventsNode checks recent events for the pod.
+func MakeCheckEventsNode(client k8s.Client) NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        name := state.Action.Name
+        ns := state.Action.Namespace
+        if ns == "" {
+            ns = "default"
+        }
+
+        events, err := client.GetEvents(ctx, ns, name)
+        if err != nil {
+            state.Error = err
+            state.Status = StatusError
+            return state, nil
+        }
+
+        var sb strings.Builder
+        sb.WriteString("Recent Events:\n")
+        for _, event := range events {
+            sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n",
+                event.LastTimestamp.Format("15:04:05"),
+                event.Message,
+                event.Type))
+        }
+
+        state.Result += "\n" + sb.String()
+        return state, nil
+    }
+}
+
+// MakeCheckLogsNode checks pod logs (last 50 lines).
+func MakeCheckLogsNode(client k8s.Client) NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        name := state.Action.Name
+        ns := state.Action.Namespace
+        if ns == "" {
+            ns = "default"
+        }
+
+        logs, err := client.GetPodLogs(ctx, ns, name, "", 50)
+        if err != nil {
+            state.Error = err
+            state.Status = StatusError
+            return state, nil
+        }
+
+        state.Result += "\nRecent Logs (last 50 lines):\n" + logs
+        return state, nil
+    }
+}
+
+// MakeCheckResourcesNode checks resource usage.
+func MakeCheckResourcesNode(client k8s.Client) NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        name := state.Action.Name
+        ns := state.Action.Namespace
+        if ns == "" {
+            ns = "default"
+        }
+
+        metrics, err := client.GetPodMetrics(ctx, ns, name)
+        if err != nil {
+            state.Error = err
+            state.Status = StatusError
+            return state, nil
+        }
+
+        var sb strings.Builder
+        sb.WriteString("Resource Usage:\n")
+        for _, container := range metrics.Containers {
+            sb.WriteString(fmt.Sprintf("  %s:\n", container.Name))
+            sb.WriteString(fmt.Sprintf("    CPU: %s\n", container.Usage.Cpu().String()))
+            sb.WriteString(fmt.Sprintf("    Memory: %s\n", container.Usage.Memory().String()))
+        }
+
+        state.Result += "\n" + sb.String()
+        return state, nil
+    }
+}
+
+// MakeCompileDiagnosticReportNode compiles all diagnostic information into a report.
+func MakeCompileDiagnosticReportNode() NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        // All diagnostic information is already accumulated in state.Result
+        state.Status = StatusExecuted
+        return state, nil
+    }
+}
+
+// Helper function to count ready containers
+func countReadyContainers(statuses []corev1.ContainerStatus) int {
+    ready := 0
+    for _, cs := range statuses {
+        if cs.Ready {
+            ready++
+        }
+    }
+    return ready
+}
 ```
 
 #### Type Definitions (From Existing Codebase)
@@ -1353,6 +2006,8 @@ type ActionPreview struct { ... }
 package workflow
 
 import (
+    "context"
+    "database/sql"
     "fmt"
     "sort"
     "strings"
@@ -1478,14 +2133,101 @@ func (m *ContextManager) Clear(threadID string) {
 }
 
 func (m *ContextManager) loadFromCheckpoint(threadID string) []ConversationEntry {
-    // Implementation depends on checkpoint format
-    // This would load conversation history from checkpoint storage
-    return nil
+    if m.checkpointer == nil {
+        return nil
+    }
+
+    // Use the database directly to store conversation history
+    // We'll add a conversation_history table for this purpose
+    rows, err := m.checkpointer.db.Query(`
+        SELECT role, content, timestamp, action_json
+        FROM conversation_history
+        WHERE thread_id = ?
+        ORDER BY timestamp ASC
+    `, threadID)
+    if err != nil {
+        return nil // Table may not exist yet
+    }
+    defer rows.Close()
+
+    var history []ConversationEntry
+    for rows.Next() {
+        var entry ConversationEntry
+        var actionJSON sql.NullString
+        var timestampStr string
+        err := rows.Scan(&entry.Role, &entry.Content, &timestampStr, &actionJSON)
+        if err != nil {
+            continue
+        }
+
+        // Parse timestamp
+        entry.Timestamp, _ = time.Parse(time.RFC3339, timestampStr)
+
+        // Parse action JSON if present
+        if actionJSON.Valid && actionJSON.String != "" {
+            // Simple JSON parsing - in production use proper JSON unmarshal
+            entry.Action = parseActionFromJSON(actionJSON.String)
+        }
+
+        history = append(history, entry)
+    }
+
+    return history
 }
 
 func (m *ContextManager) saveToCheckpoint(threadID string) {
-    // Implementation depends on checkpoint format
-    // This would save conversation history to checkpoint storage
+    if m.checkpointer == nil {
+        return
+    }
+
+    ctx := m.contexts[threadID]
+    if ctx == nil {
+        return
+    }
+
+    // Ensure conversation_history table exists
+    _, _ = m.checkpointer.db.Exec(`
+        CREATE TABLE IF NOT EXISTS conversation_history (
+            thread_id TEXT,
+            role TEXT,
+            content TEXT,
+            timestamp TEXT,
+            action_json TEXT,
+            PRIMARY KEY (thread_id, role, timestamp)
+        )
+    `)
+
+    // Save all entries
+    for _, entry := range ctx.History {
+        var actionJSON string
+        if entry.Action != nil {
+            actionJSON = fmt.Sprintf(`{"action":"%s","resource":"%s","namespace":"%s"}`,
+                entry.Action.Action, entry.Action.Resource, entry.Action.Namespace)
+        }
+
+        _, err := m.checkpointer.db.Exec(`
+            INSERT OR REPLACE INTO conversation_history
+            (thread_id, role, content, timestamp, action_json)
+            VALUES (?, ?, ?, ?, ?)
+        `, threadID, entry.Role, entry.Content, entry.Timestamp.Format(time.RFC3339), actionJSON)
+        if err != nil {
+            // Log error but continue
+            continue
+        }
+    }
+}
+
+// Helper function to parse action from JSON (simplified)
+func parseActionFromJSON(jsonStr string) *K8sAction {
+    // Simplified parser - in production use encoding/json
+    action := &K8sAction{
+        Action:    "",
+        Resource:  "",
+        Namespace: "",
+    }
+    // Parse the JSON string and populate action fields
+    // This is a placeholder for actual JSON parsing
+    return action
 }
 ```
 
@@ -1754,7 +2496,8 @@ type AgentState struct {
 
     Reply string
 
-    // === New fields for sub-graph support ===
+    // === New fields for tool routing ===
+    UseToolRouter   bool   // Whether to route through tool registry
     UseSubGraph     bool   // Whether to route to a sub-graph
     TargetSubGraph  string // Name of target sub-graph
 }
@@ -1981,36 +2724,6 @@ This gradual migration approach allows:
 - New features to use tools immediately
 - Feature flags to control routing
 - Safe rollback if issues arise
-
-### Phase 4: Integration & Testing (2-3 weeks)
-
-**Goal**: Ensure everything works together.
-
-| Task | Effort | Dependencies |
-|------|---------|--------------|
-| Update main graph routing | 1 day | All phases complete |
-| Add sub-graph routing node | 1 day | Graph updated |
-| Coexistence testing | 2 days | Routing updated |
-| End-to-end integration tests | 3 days | All phases complete |
-| Performance benchmarking | 1 day | Integration working |
-| Update documentation | 2 days | Integration working |
-| Update ARCHITECTURE.md | 1 day | Code complete |
-| Update ROADMAP.md | 0.5 day | Architecture updated |
-| Create migration guide | 1 day | Documentation updated |
-| **Total** | **~2.5 weeks** | |
-
-**Milestone**: Production-ready extensibility system.
-
-| Task | Effort | Dependencies |
-|------|---------|--------------|
-| End-to-end integration tests | 2 days | All phases complete |
-| Update documentation | 2 days | Integration working |
-| Update ARCHITECTURE.md | 1 day | Code complete |
-| Update ROADMAP.md | 0.5 day | Architecture updated |
-| Create migration guide | 0.5 day | Documentation updated |
-| **Total** | **~1 week** | |
-
-**Milestone**: Production-ready extensibility system.
 
 ---
 
