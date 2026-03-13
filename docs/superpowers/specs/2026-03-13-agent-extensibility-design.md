@@ -407,6 +407,7 @@ func (t *operationTool) Execute(ctx context.Context, args map[string]interface{}
 
 ```go
 // pkg/k8s/handlers/deployment.go
+// pkg/k8s/yaml.go (helper for YAML generation)
 
 package handlers
 
@@ -638,6 +639,31 @@ func (h *DeploymentHandler) delete(ctx context.Context, args map[string]interfac
         DangerLevel: tools.DangerHigh,
         NeedsConfirm: true,
     }, nil
+}
+
+// YAML generation helper
+func generateDeploymentYAML(name, namespace, image string, replicas int) string {
+    return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: %d
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      containers:
+      - name: %s
+        image: %s
+        ports:
+        - containerPort: 80
+`, name, namespace, replicas, name, name, image)
 }
 ```
 
@@ -973,6 +999,23 @@ This ensures that when tools are registered in code (via handlers), they are aut
 
 ### 5. Workflow Enhancements
 
+#### Dependencies Structure Update
+
+```go
+// pkg/workflow/state.go (updated for new dependencies)
+
+// Dependencies holds the dependencies needed by workflow nodes.
+type Dependencies struct {
+    K8sClient     k8s.Client
+    LLM            llm.Client
+    ModelName      string
+    ToolRegistry   *tools.Registry    // NEW - Phase 1
+    PromptLoader   *prompts.Loader   // NEW - Phase 2
+    SubGraphMgr   *SubGraphManager  // NEW - Phase 3
+    ContextMgr     *ContextManager    // NEW - Phase 3
+}
+```
+
 #### Sub-Graph Pattern
 
 ```go
@@ -1212,6 +1255,96 @@ func MakeGetLogsNode(client k8s.Client) NodeFunc {
 }
 ```
 
+#### Routing Helper Functions
+
+```go
+// pkg/workflow/routing.go (additions)
+
+// buildToolArgs converts K8sAction to tool arguments.
+func buildToolArgs(action *K8sAction) map[string]interface{} {
+    args := make(map[string]interface{})
+    args["namespace"] = action.Namespace
+    args["name"] = action.Name
+    for k, v := range action.Params {
+        args[k] = v
+    }
+    return args
+}
+
+// RouteAfterLogValidation determines next node after log validation.
+func RouteAfterLogValidation(ctx context.Context, state AgentState) string {
+    if state.Error != nil {
+        return lgg.END
+    }
+    return "get_logs"
+}
+
+// RouteAfterExecValidation determines next node after exec validation.
+func RouteAfterExecValidation(ctx context.Context, state AgentState) string {
+    if state.Error != nil {
+        return lgg.END
+    }
+
+    // Dangerous commands need confirmation
+    if isDangerousCommand(state.Action) {
+        return "confirm_command"
+    }
+    return "execute_command"
+}
+
+func isDangerousCommand(action *K8sAction) bool {
+    // Check for dangerous commands (rm, rm -rf, etc.)
+    if command, ok := action.Params["command"].(string); ok {
+        dangerous := []string{"rm", "rm -rf", "dd", "mkfs", "fdisk"}
+        for _, d := range dangerous {
+            if strings.Contains(command, d) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// RouteAfterCommandConfirm determines next node after command confirmation.
+func RouteAfterCommandConfirm(ctx context.Context, state AgentState) string {
+    if state.Confirm == nil || !*state.Confirm {
+        return lgg.END // Wait for user confirmation
+    }
+    return "execute_command"
+}
+```
+
+#### Type Definitions (From Existing Codebase)
+
+```go
+// pkg/workflow/state.go (existing types - referenced throughout spec)
+
+type K8sAction struct {
+    Action         string                 `json:"action"`
+    Resource       string                 `json:"resource"`
+    Name           string                 `json:"name"`
+    Namespace      string                 `json:"namespace"`
+    Params         map[string]interface{} `json:"params"`
+    IsK8sOperation bool                   `json:"is_k8s_operation"`
+    Reply          string                 `json:"reply"`
+}
+
+const (
+    StatusPending      = "pending"
+    StatusNeedsInfo    = "needs_info"
+    StatusNeedsConfirm = "needs_confirm"
+    StatusExecuted     = "executed"
+    StatusError        = "error"
+    StatusChat         = "chat"
+)
+
+// api/models/types (existing models referenced)
+
+// From api/models/requests.go:
+type ClarificationRequest struct { ... }
+type ActionPreview struct { ... }
+```
+
 #### Context-Aware State Management
 
 ```go
@@ -1353,6 +1486,200 @@ func (m *ContextManager) loadFromCheckpoint(threadID string) []ConversationEntry
 func (m *ContextManager) saveToCheckpoint(threadID string) {
     // Implementation depends on checkpoint format
     // This would save conversation history to checkpoint storage
+}
+```
+
+#### Handler Registry Implementation
+
+```go
+// pkg/k8s/handlers/registry.go
+
+package handlers
+
+import (
+    "fmt"
+    "k8s.io/client-go/kubernetes"
+    "k8s-wizard/pkg/tools"
+)
+
+// HandlerRegistry manages all K8s resource handlers.
+type HandlerRegistry struct {
+    handlers map[string]Handler
+}
+
+// NewHandlerRegistry creates an empty handler registry.
+func NewHandlerRegistry() *HandlerRegistry {
+    return &HandlerRegistry{
+        handlers: make(map[string]Handler),
+    }
+}
+
+// Register adds a handler to the registry.
+func (r *HandlerRegistry) Register(handler Handler) error {
+    r.handlers[handler.Resource()] = handler
+    return nil
+}
+
+// RegisterWithTools registers a handler and all its tools.
+func (r *HandlerRegistry) RegisterWithTools(handler Handler, toolRegistry *tools.Registry) error {
+    // Register the handler first
+    if err := r.Register(handler); err != nil {
+        return err
+    }
+
+    // Type assertion to get RegisterTools method
+    // Handlers must implement RegisterTools(registry *tools.Registry) error
+    type registrable interface {
+        RegisterTools(*tools.Registry) error
+    }
+
+    if reg, ok := handler.(registrable); ok {
+        return reg.RegisterTools(toolRegistry)
+    }
+
+    return fmt.Errorf("handler does not support tool registration: %s", handler.Resource())
+}
+
+// Get retrieves a handler by resource type.
+func (r *HandlerRegistry) Get(resource string) (Handler, bool) {
+    handler, exists := r.handlers[resource]
+    return handler, exists
+}
+
+// InitializeStandardHandlers registers all standard K8s handlers.
+func (r *HandlerRegistry) InitializeStandardHandlers(clientset kubernetes.Interface, toolRegistry *tools.Registry) error {
+    handlers := []Handler{
+        NewDeploymentHandler(clientset),
+        NewPodHandler(clientset),
+        NewServiceHandler(clientset),
+    }
+
+    for _, handler := range handlers {
+        if err := r.RegisterWithTools(handler, toolRegistry); err != nil {
+            return fmt.Errorf("failed to register %s tools: %w", handler.Resource(), err)
+        }
+    }
+
+    return nil
+}
+```
+
+#### Complete Sub-Graph Node Implementations
+
+```go
+// pkg/workflow/logs_nodes.go (additional nodes)
+
+// MakeFormatLogsNode formats logs for display.
+func MakeFormatLogsNode() NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        if state.Result == "" {
+            return state, nil
+        }
+
+        // Format logs for display
+        // Add line numbers, timestamps, etc.
+        formatted := state.Result
+
+        state.Result = formatted
+        state.Status = StatusExecuted
+        return state, nil
+    }
+}
+
+// pkg/workflow/exec_nodes.go (additional nodes)
+
+// MakeValidateExecParamsNode validates exec parameters.
+func MakeValidateExecParamsNode() NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        if state.Action == nil {
+            return state, nil
+        }
+
+        // Check required parameters
+        if state.Action.Name == "" {
+            state.Error = fmt.Errorf("pod name is required for exec")
+            state.Status = StatusError
+            return state, nil
+        }
+
+        command, _ := state.Action.Params["command"].(string)
+        if command == "" {
+            state.Error = fmt.Errorf("command is required for exec")
+            state.Status = StatusError
+            return state, nil
+        }
+
+        return state, nil
+    }
+}
+
+// MakeConfirmCommandNode generates confirmation prompt for dangerous commands.
+func MakeConfirmCommandNode() NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        if state.Action == nil {
+            return state, nil
+        }
+
+        command, _ := state.Action.Params["command"].(string)
+
+        if !isDangerousCommand(state.Action) {
+            // Safe command, skip confirmation
+            return state, nil
+        }
+
+        // Generate confirmation request
+        state.ClarificationRequest = &models.ClarificationRequest{
+            Type:   "confirm",
+            Title:  "⚠️ 危险操作确认",
+            Action: "exec",
+            Fields: []models.ClarificationField{
+                {
+                    Key:         "confirm",
+                    Label:       "确认执行此命令",
+                    Type:        "boolean",
+                    Required:    true,
+                    Group:       "basic",
+                },
+            },
+        }
+        state.NeedsClarification = true
+        state.Status = StatusNeedsConfirm
+
+        return state, nil
+    }
+}
+
+// MakeExecuteCommandNode executes command in container.
+func MakeExecuteCommandNode(client k8s.Client) NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        command, _ := state.Action.Params["command"].(string)
+        container, _ := state.Action.Params["container"].(string)
+        name := state.Action.Name
+        ns := state.Action.Namespace
+        if ns == "" {
+            ns = "default"
+        }
+
+        output, err := client.ExecPod(ctx, ns, name, container, command)
+        if err != nil {
+            state.Error = err
+            state.Status = StatusError
+            return state, nil
+        }
+
+        state.Result = output
+        state.Status = StatusExecuted
+        return state, nil
+    }
+}
+
+// MakeStreamOutputNode streams command output.
+func MakeStreamOutputNode() NodeFunc {
+    return func(ctx context.Context, state AgentState) (AgentState, error) {
+        // Output is already in state.Result from ExecuteCommandNode
+        state.Status = StatusExecuted
+        return state, nil
+    }
 }
 ```
 
@@ -1655,6 +1982,25 @@ This gradual migration approach allows:
 - Feature flags to control routing
 - Safe rollback if issues arise
 
+### Phase 4: Integration & Testing (2-3 weeks)
+
+**Goal**: Ensure everything works together.
+
+| Task | Effort | Dependencies |
+|------|---------|--------------|
+| Update main graph routing | 1 day | All phases complete |
+| Add sub-graph routing node | 1 day | Graph updated |
+| Coexistence testing | 2 days | Routing updated |
+| End-to-end integration tests | 3 days | All phases complete |
+| Performance benchmarking | 1 day | Integration working |
+| Update documentation | 2 days | Integration working |
+| Update ARCHITECTURE.md | 1 day | Code complete |
+| Update ROADMAP.md | 0.5 day | Architecture updated |
+| Create migration guide | 1 day | Documentation updated |
+| **Total** | **~2.5 weeks** | |
+
+**Milestone**: Production-ready extensibility system.
+
 | Task | Effort | Dependencies |
 |------|---------|--------------|
 | End-to-end integration tests | 2 days | All phases complete |
@@ -1665,6 +2011,42 @@ This gradual migration approach allows:
 | **Total** | **~1 week** | |
 
 **Milestone**: Production-ready extensibility system.
+
+---
+
+## Assumptions
+
+This design makes several assumptions about the existing codebase:
+
+1. **LangGraphGo Sub-Graph Support**
+   - Assumption: LangGraphGo supports nested sub-graphs or can implement them via routing pattern
+   - If not supported: The routing pattern (manual sub-graph invocation) will be used
+
+2. **Checkpoint Storage**
+   - Assumption: Existing `CheckpointerManager` from `pkg/workflow/checkpointer.go` provides session persistence
+   - Context persistence will use the same mechanism or in-memory storage if unavailable
+
+3. **Existing Type Definitions**
+   - Assumption: `K8sAction`, `AgentState`, `models.*` types already exist in codebase and are stable
+   - New fields will be added to `AgentState` (UseSubGraph, TargetSubGraph)
+
+4. **LLM Integration**
+   - Assumption: LLM client can handle text-only prompts (no streaming requirement for Phase 1-2)
+   - Tool descriptions will be injected into prompts as plain text
+
+5. **Testing Infrastructure**
+   - Assumption: Existing test setup (Kind cluster, test utilities) is available
+   - No additional infrastructure required for unit tests
+
+6. **Deployment Model**
+   - Assumption: Single K8s cluster with standard client-go configuration
+   - No multi-cluster or RBAC constraints in current environment
+
+7. **Go Version**
+   - Assumption: Go 1.24+ is available (already in use per go.mod)
+   - Generics and other modern Go features can be used if beneficial
+
+If any of these assumptions are incorrect, the design may need adjustment during implementation.
 
 ---
 
