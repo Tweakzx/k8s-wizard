@@ -26,3 +26,14 @@ type Result struct {
 	Preview      string
 	NeedsConfirm bool
 }
+
+// ToolDescription represents a tool for LLM prompting.
+type ToolDescription struct {
+	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description" json:"description"`
+	Category    string            `yaml:"category" json:"category"`
+	Parameters  []Parameter       `yaml:"parameters" json:"parameters"`
+	DangerLevel DangerLevel       `yaml:"danger_level" json:"danger_level"`
+	Examples    []string          `yaml:"examples" json:"examples"`
+	Metadata    map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+}

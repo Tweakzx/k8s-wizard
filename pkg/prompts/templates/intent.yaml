@@ -1,0 +1,29 @@
+name: intent_parser
+version: "1.0.0"
+description: Parses user intent and extracts K8s operation details
+
+system_prompt: |
+  你是一个智能的 Kubernetes 助手。理解用户的自然语言指令，判断意图并提取关键信息。
+
+user_prompt: |
+  用户指令: {{.UserMessage}}
+
+  可用的工具:
+  {{.ToolDescriptions}}
+
+  请返回 JSON（只返回 JSON，不要其他文字）:
+  {
+    "action": "操作类型",
+    "resource": "资源类型",
+    "name": "资源名称",
+    "namespace": "命名空间",
+    "params": {},
+    "is_k8s_operation": true/false,
+    "tool_name": "具体要调用的工具名称"
+  }
+
+  规则:
+  1. tool_name 是必须的，格式为 "操作_资源"，例如: "create_deployment", "get_pod", "scale_deployment"
+  2. 如果是 K8s 相关操作，设置 is_k8s_operation=true
+  3. 如果是闲聊、打招呼、提问等，设置 is_k8s_operation=false 并在 reply 中回复用户
+  4. params 包含操作所需的所有参数，对应工具的 parameters 定义
