@@ -374,6 +374,54 @@ func generateActionPreview(action *K8sAction) *models.ActionPreview {
 
 ---
 
+## Tool System Architecture
+
+The tool system provides a uniform abstraction for K8s operations:
+
+### Tool Interface
+```go
+type Tool interface {
+    Name() string
+    Description() string
+    Category() string
+    Parameters() []Parameter
+    DangerLevel() DangerLevel
+    Execute(ctx context.Context, args map[string]interface{}) (Result, error)
+}
+```
+
+### Registry Pattern
+The tool registry enables dynamic discovery and routing of tools:
+- Tools register themselves via `registry.Register(tool)`
+- LLM can query available tools via `registry.GetLLMDescriptions()`
+- Tools execute via `registry.Execute(ctx, name, args)`
+
+### Handler Pattern
+Resource handlers bridge K8s API to tools:
+- One handler per resource type (deployment, pod, service, etc.)
+- Each handler defines operations (create, get, scale, delete)
+- Handlers automatically register their operations as tools
+
+### Sub-Graphs
+Reusable workflow fragments for complex operations:
+- LogsSubGraph: Fetch and display pod logs
+- ExecSubGraph: Execute commands in pods
+- DiagnosticsSubGraph: Multi-step pod diagnostics
+
+### Context Management
+ContextManager maintains conversation history:
+- Tracks last operation, resource, namespace
+- Persists to SQLite via CheckpointerManager
+- Provides formatted context for LLM
+
+### Migration Strategy
+The new tool system coexists with existing code:
+- Feature flags control routing (UseToolRouter, UseSubGraph)
+- Old code paths remain functional during migration
+- Incremental adoption per resource type
+
+---
+
 ## 扩展性设计
 
 ### 1. 插件化节点

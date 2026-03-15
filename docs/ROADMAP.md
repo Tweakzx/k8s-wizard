@@ -1,5 +1,26 @@
 # K8s Wizard Development Roadmap
 
+## Completed
+
+- [x] Tool system with Registry pattern
+- [x] Resource handler abstraction
+- [x] Prompt loader with YAML templates
+- [x] Sub-graph interface for reusable workflows
+- [x] ContextManager for conversation tracking
+
+## In Progress
+
+- [ ] Migration of all existing resources to handlers
+- [ ] Sub-graph implementation (logs, exec, diagnostics)
+
+## Future
+
+- [ ] Additional resource handlers (StatefulSet, DaemonSet, ConfigMap, Secret)
+- [ ] Advanced sub-graphs (multi-pod workflows, deployment strategies)
+- [ ] Enhanced context awareness (cross-session context, semantic search)
+
+---
+
 ## 📊 Current Status (v0.1.0)
 
 ### ✅ Implemented Features
