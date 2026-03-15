@@ -395,7 +395,7 @@ func NewGraphAgentFromConfig() (*GraphAgent, error) {
 		return nil, err
 	}
 
-	return NewGraphAgent(k8s.NewClient(clientset), llmClient, modelName)
+	return NewGraphAgent(k8s.NewClient(clientset, k8sConfig), llmClient, modelName)
 }
 
 // NewGraphAgentWithCheckpointerFromConfig creates a new GraphAgent with session persistence.
@@ -430,7 +430,7 @@ func NewGraphAgentWithCheckpointerFromConfig(dataDir string) (*GraphAgentWithChe
 		return nil, fmt.Errorf("failed to create checkpointer: %w", err)
 	}
 
-	return NewGraphAgentWithCheckpointer(k8s.NewClient(clientset), llmClient, modelName, checkpointer)
+	return NewGraphAgentWithCheckpointer(k8s.NewClient(clientset, k8sConfig), llmClient, modelName, checkpointer)
 }
 
 // getK8sConfig initializes and returns the Kubernetes configuration.
