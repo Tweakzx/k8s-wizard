@@ -62,6 +62,22 @@ func (h *BaseHandler) CreateTool(op Operation, executor ToolExecutor) tools.Tool
 	}
 }
 
+// RegisterTools registers all operations as tools in the registry.
+func (h *BaseHandler) RegisterTools(registry *tools.Registry, executors map[string]ToolExecutor) error {
+	for _, op := range h.ops {
+		executor, exists := executors[op.Method]
+		if !exists {
+			return fmt.Errorf("executor for method %s not found", op.Method)
+		}
+
+		tool := h.CreateTool(op, executor)
+		if err := registry.Register(tool); err != nil {
+			return fmt.Errorf("failed to register tool %s: %w", op.Name, err)
+		}
+	}
+	return nil
+}
+
 // ToolExecutor defines how to execute an operation.
 type ToolExecutor func(ctx context.Context, args map[string]interface{}) (tools.Result, error)
 

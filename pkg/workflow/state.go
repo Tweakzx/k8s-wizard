@@ -5,6 +5,7 @@ import (
 
 	"k8s-wizard/api/models"
 	"k8s-wizard/pkg/k8s"
+	"k8s-wizard/pkg/k8s/handlers"
 	"k8s-wizard/pkg/llm"
 	"k8s-wizard/pkg/tools"
 )
@@ -74,3 +75,7 @@ const (
 
 // NodeFunc is the type for workflow node functions.
 type NodeFunc func(ctx context.Context, state AgentState) (AgentState, error)
+
+// Ensure handlers package is imported for future handler registration
+// This will be used in later phases when integrating the full handler system
+var _ = handlers.NewBaseHandler
