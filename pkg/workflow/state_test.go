@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"testing"
+
+	"k8s-wizard/pkg/tools"
 )
 
 func TestStatusConstants(t *testing.T) {
@@ -133,6 +135,17 @@ func TestDependencies(t *testing.T) {
 	}
 	if deps.LLM != nil {
 		t.Errorf("LLM should be nil by default")
+	}
+}
+
+func TestDependenciesWithToolRegistry(t *testing.T) {
+	deps := Dependencies{
+		ToolRegistry: tools.NewRegistry(),
+		// other fields omitted for brevity
+	}
+
+	if deps.ToolRegistry == nil {
+		t.Errorf("ToolRegistry field should not be nil in Dependencies")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"k8s-wizard/pkg/config"
 	"k8s-wizard/pkg/k8s"
 	"k8s-wizard/pkg/llm"
+	"k8s-wizard/pkg/tools"
 	"k8s-wizard/pkg/workflow"
 
 	lgg "github.com/smallnest/langgraphgo/graph"
@@ -54,9 +55,14 @@ type GraphAgent struct {
 // NewGraphAgent creates a new GraphAgent.
 func NewGraphAgent(k8sClient k8s.Client, llmClient llm.Client, modelName string) (*GraphAgent, error) {
 	deps := &workflow.Dependencies{
-		K8sClient: k8sClient,
-		LLM:       llmClient,
-		ModelName: modelName,
+		K8sClient:    k8sClient,
+		LLM:          llmClient,
+		ModelName:    modelName,
+		ToolRegistry: tools.NewRegistry(),
+		// PromptLoader, SubGraphMgr, ContextMgr will be initialized in later phases
+		PromptLoader: nil,
+		SubGraphMgr:  nil,
+		ContextMgr:   nil,
 	}
 
 	compiledGraph, err := workflow.NewK8sWizardGraph(deps)
@@ -201,9 +207,14 @@ type GraphAgentWithCheckpointer struct {
 // NewGraphAgentWithCheckpointer creates a new GraphAgent with session persistence.
 func NewGraphAgentWithCheckpointer(k8sClient k8s.Client, llmClient llm.Client, modelName string, checkpointer *workflow.CheckpointerManager) (*GraphAgentWithCheckpointer, error) {
 	deps := &workflow.Dependencies{
-		K8sClient: k8sClient,
-		LLM:       llmClient,
-		ModelName: modelName,
+		K8sClient:    k8sClient,
+		LLM:          llmClient,
+		ModelName:    modelName,
+		ToolRegistry: tools.NewRegistry(),
+		// PromptLoader, SubGraphMgr, ContextMgr will be initialized in later phases
+		PromptLoader: nil,
+		SubGraphMgr:  nil,
+		ContextMgr:   nil,
 	}
 
 	compiledGraph, err := workflow.NewK8sWizardGraphWithCheckpointer(deps, checkpointer.GetStore())

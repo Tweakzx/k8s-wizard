@@ -47,6 +47,14 @@ func TestNewGraphAgent(t *testing.T) {
 	if agent == nil {
 		t.Fatal("expected agent to be created")
 	}
+
+	// Verify ToolRegistry is initialized
+	if agent.deps == nil {
+		t.Fatal("expected agent dependencies to be initialized")
+	}
+	if agent.deps.ToolRegistry == nil {
+		t.Error("expected ToolRegistry to be initialized in agent dependencies")
+	}
 }
 
 func TestGraphAgent_GetModelName(t *testing.T) {
@@ -239,6 +247,14 @@ func TestNewGraphAgentWithCheckpointer(t *testing.T) {
 
 	if agent == nil {
 		t.Fatal("expected agent to be created")
+	}
+
+	// Verify ToolRegistry is initialized
+	if agent.deps == nil {
+		t.Fatal("expected agent dependencies to be initialized")
+	}
+	if agent.deps.ToolRegistry == nil {
+		t.Error("expected ToolRegistry to be initialized in agent dependencies")
 	}
 }
 
