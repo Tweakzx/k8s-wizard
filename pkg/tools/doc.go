@@ -4,9 +4,9 @@ import "fmt"
 
 const (
 	// Package documentation
-	PackageName     = "tools"
-	PackageVersion  = "1.0.0"
-	PackageDesc     = "Tool system for K8s operations - uniform abstraction and registry"
+	PackageName    = "tools"
+	PackageVersion = "1.0.0"
+	PackageDesc    = "Tool system for K8s operations - uniform abstraction and registry"
 )
 
 // Doc returns package documentation.

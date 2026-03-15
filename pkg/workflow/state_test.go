@@ -148,4 +148,3 @@ func TestDependenciesWithToolRegistry(t *testing.T) {
 		t.Errorf("ToolRegistry field should not be nil in Dependencies")
 	}
 }
-

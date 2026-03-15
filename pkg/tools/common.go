@@ -20,9 +20,9 @@ type Parameter struct {
 
 // Result represents the output of a tool execution.
 type Result struct {
-	Success     bool
-	Message     string
-	Data        interface{}
-	Preview     string
+	Success      bool
+	Message      string
+	Data         interface{}
+	Preview      string
 	NeedsConfirm bool
 }
