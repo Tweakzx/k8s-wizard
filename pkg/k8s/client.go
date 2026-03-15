@@ -266,6 +266,17 @@ func (c *KubernetesClient) DeleteResource(ctx context.Context, namespace, name, 
 
 // GetPodLogs fetches pod logs.
 func (c *KubernetesClient) GetPodLogs(ctx context.Context, namespace string, pod string, container string, tailLines int64) (string, error) {
+	// Validate parameters
+	if namespace == "" {
+		return "", fmt.Errorf("namespace cannot be empty")
+	}
+	if pod == "" {
+		return "", fmt.Errorf("pod name cannot be empty")
+	}
+	if tailLines <= 0 {
+		return "", fmt.Errorf("tailLines must be positive, got: %d", tailLines)
+	}
+
 	req := c.clientset.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
 		Container: container,
 		TailLines: &tailLines,
@@ -287,8 +298,23 @@ func (c *KubernetesClient) GetPodLogs(ctx context.Context, namespace string, pod
 
 // ExecPod executes a command in a pod.
 func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod string, container string, command string) (string, error) {
+	// Validate parameters
+	if namespace == "" {
+		return "", fmt.Errorf("namespace cannot be empty")
+	}
+	if pod == "" {
+		return "", fmt.Errorf("pod name cannot be empty")
+	}
+	if container == "" {
+		return "", fmt.Errorf("container cannot be empty")
+	}
 	if command == "" {
 		return "", fmt.Errorf("command cannot be empty")
+	}
+
+	// Check config is available for SPDY executor
+	if c.config == nil {
+		return "", fmt.Errorf("client config is nil, cannot execute pod commands")
 	}
 
 	// Split command into args (simple shell -c wrapper)

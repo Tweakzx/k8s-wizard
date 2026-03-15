@@ -415,6 +415,66 @@ func TestGetPodLogs(t *testing.T) {
 	_ = logs
 }
 
+func TestGetPodLogs_ValidationErrors(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := fake.NewSimpleClientset()
+	client := NewClient(fakeClient, nil)
+
+	tests := []struct {
+		name      string
+		namespace string
+		pod       string
+		tailLines int64
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name:      "empty namespace",
+			namespace: "",
+			pod:       "test-pod",
+			tailLines: 100,
+			wantErr:   true,
+			errMsg:    "namespace cannot be empty",
+		},
+		{
+			name:      "empty pod name",
+			namespace: "test-ns",
+			pod:       "",
+			tailLines: 100,
+			wantErr:   true,
+			errMsg:    "pod name cannot be empty",
+		},
+		{
+			name:      "negative tailLines",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			tailLines: -1,
+			wantErr:   true,
+			errMsg:    "tailLines must be positive",
+		},
+		{
+			name:      "zero tailLines",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			tailLines: 0,
+			wantErr:   true,
+			errMsg:    "tailLines must be positive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.GetPodLogs(ctx, tt.namespace, tt.pod, "", tt.tailLines)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestExecPod(t *testing.T) {
 	ctx := context.Background()
 	fakeClient := fake.NewSimpleClientset()
@@ -426,5 +486,81 @@ func TestExecPod(t *testing.T) {
 	// We expect this to fail with fake client
 	if err == nil {
 		t.Error("expected error with fake client for exec")
+	}
+}
+
+func TestExecPod_NilConfig(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := fake.NewSimpleClientset()
+	client := NewClient(fakeClient, nil)
+
+	// Test that ExecPod with nil config returns proper error
+	_, err := client.ExecPod(ctx, "test-ns", "test-pod", "test-container", "echo test")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "config is nil")
+}
+
+func TestExecPod_ValidationErrors(t *testing.T) {
+	ctx := context.Background()
+	fakeClient := fake.NewSimpleClientset()
+	client := NewClient(fakeClient, nil)
+
+	tests := []struct {
+		name      string
+		namespace string
+		pod       string
+		container string
+		command   string
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name:      "empty namespace",
+			namespace: "",
+			pod:       "test-pod",
+			container: "test-container",
+			command:   "echo test",
+			wantErr:   true,
+			errMsg:    "namespace cannot be empty",
+		},
+		{
+			name:      "empty pod name",
+			namespace: "test-ns",
+			pod:       "",
+			container: "test-container",
+			command:   "echo test",
+			wantErr:   true,
+			errMsg:    "pod name cannot be empty",
+		},
+		{
+			name:      "empty container",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			container: "",
+			command:   "echo test",
+			wantErr:   true,
+			errMsg:    "container cannot be empty",
+		},
+		{
+			name:      "empty command",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			container: "test-container",
+			command:   "",
+			wantErr:   true,
+			errMsg:    "command cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.ExecPod(ctx, tt.namespace, tt.pod, tt.container, tt.command)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
 }

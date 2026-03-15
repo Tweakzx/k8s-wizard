@@ -119,8 +119,14 @@ func (m *CheckpointerManager) ClearSession(ctx context.Context, threadID string)
 	if err := m.store.Clear(ctx, threadID); err != nil {
 		return err
 	}
+	// Delete from both session_metadata and conversation_history tables
 	_, err := m.db.ExecContext(ctx, "DELETE FROM session_metadata WHERE thread_id = ?", threadID)
-	return err
+	if err != nil {
+		return err
+	}
+	// conversation_history table may not exist yet, ignore errors
+	_, _ = m.db.ExecContext(ctx, "DELETE FROM conversation_history WHERE thread_id = ?", threadID)
+	return nil
 }
 
 func (m *CheckpointerManager) ListSessions(ctx context.Context) ([]SessionInfo, error) {

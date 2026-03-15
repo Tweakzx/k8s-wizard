@@ -1,9 +1,10 @@
 package workflow
 
 import (
-	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -68,7 +69,15 @@ func (m *ContextManager) Get(threadID string) *ConversationContext {
 }
 
 // AddEntry adds an entry to conversation history.
-func (m *ContextManager) AddEntry(threadID string, entry ConversationEntry) {
+func (m *ContextManager) AddEntry(threadID string, entry ConversationEntry) error {
+	// Validate inputs
+	if threadID == "" {
+		return fmt.Errorf("threadID cannot be empty")
+	}
+	if entry.Role != "user" && entry.Role != "assistant" {
+		return fmt.Errorf("invalid role: %s (must be 'user' or 'assistant')", entry.Role)
+	}
+
 	ctx := m.Get(threadID)
 	ctx.History = append(ctx.History, entry)
 	ctx.Timestamp = time.Now()
@@ -82,8 +91,12 @@ func (m *ContextManager) AddEntry(threadID string, entry ConversationEntry) {
 
 	// Persist to checkpoint if available
 	if m.checkpointer != nil {
-		m.saveToCheckpoint(threadID)
+		if err := m.saveToCheckpoint(threadID); err != nil {
+			return fmt.Errorf("failed to save to checkpoint: %w", err)
+		}
 	}
+
+	return nil
 }
 
 // GetContextString returns formatted context for LLM.
@@ -118,12 +131,11 @@ func (m *ContextManager) GetContextString(threadID string, maxHistory int) strin
 	return sb.String()
 }
 
-// Clear removes conversation context.
-func (m *ContextManager) Clear(threadID string) {
+// Clear removes conversation context from memory only.
+// The checkpoint data is preserved and can be reloaded via Get().
+func (m *ContextManager) Clear(threadID string) error {
 	delete(m.contexts, threadID)
-	if m.checkpointer != nil {
-		_ = m.checkpointer.ClearSession(context.Background(), threadID)
-	}
+	return nil
 }
 
 // HasContext checks if a context exists without creating one.
@@ -157,11 +169,16 @@ func (m *ContextManager) loadFromCheckpoint(threadID string) []ConversationEntry
 		var timestampStr string
 		err := rows.Scan(&entry.Role, &entry.Content, &timestampStr, &actionJSON)
 		if err != nil {
+			log.Printf("ERROR: Failed to scan conversation entry for thread %s: %v", threadID, err)
 			continue
 		}
 
-		// Parse timestamp
-		entry.Timestamp, _ = time.Parse(time.RFC3339, timestampStr)
+		// Parse timestamp with error handling
+		entry.Timestamp, err = time.Parse(time.RFC3339, timestampStr)
+		if err != nil {
+			log.Printf("ERROR: Failed to parse timestamp '%s' for thread %s, using current time: %v", timestampStr, threadID, err)
+			entry.Timestamp = time.Now()
+		}
 
 		// Parse action JSON if present
 		if actionJSON.Valid && actionJSON.String != "" {
@@ -175,86 +192,65 @@ func (m *ContextManager) loadFromCheckpoint(threadID string) []ConversationEntry
 	return history
 }
 
-func (m *ContextManager) saveToCheckpoint(threadID string) {
+func (m *ContextManager) saveToCheckpoint(threadID string) error {
 	if m.checkpointer == nil {
-		return
+		return nil
 	}
 
 	ctx := m.contexts[threadID]
 	if ctx == nil {
-		return
+		return fmt.Errorf("context not found for thread %s", threadID)
 	}
 
-	// Ensure conversation_history table exists
-	_, _ = m.checkpointer.db.Exec(`
+	// Ensure conversation_history table exists with auto-increment ID to prevent timestamp collisions
+	_, err := m.checkpointer.db.Exec(`
 		CREATE TABLE IF NOT EXISTS conversation_history (
-			thread_id TEXT,
-			role TEXT,
-			content TEXT,
-			timestamp TEXT,
-			action_json TEXT,
-			PRIMARY KEY (thread_id, role, timestamp)
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			thread_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			timestamp TEXT NOT NULL,
+			action_json TEXT
 		)
 	`)
+	if err != nil {
+		return fmt.Errorf("failed to create table: %w", err)
+	}
 
 	// Save all entries
 	for _, entry := range ctx.History {
 		var actionJSON string
 		if entry.Action != nil {
-			actionJSON = fmt.Sprintf(`{"action":"%s","resource":"%s","namespace":"%s"}`,
-				entry.Action.Action, entry.Action.Resource, entry.Action.Namespace)
+			// Serialize all 7 K8sAction fields using encoding/json
+			actionBytes, err := json.Marshal(entry.Action)
+			if err != nil {
+				log.Printf("ERROR: Failed to serialize action for thread %s: %v", threadID, err)
+				continue
+			}
+			actionJSON = string(actionBytes)
 		}
 
 		_, err := m.checkpointer.db.Exec(`
-			INSERT OR REPLACE INTO conversation_history
+			INSERT INTO conversation_history
 			(thread_id, role, content, timestamp, action_json)
 			VALUES (?, ?, ?, ?, ?)
 		`, threadID, entry.Role, entry.Content, entry.Timestamp.Format(time.RFC3339), actionJSON)
 		if err != nil {
-			// Log error but continue
-			continue
+			return fmt.Errorf("failed to save conversation entry for thread %s: %w", threadID, err)
 		}
 	}
+
+	return nil
 }
 
 // Helper function to parse action from JSON
 func parseActionFromJSON(jsonStr string) *K8sAction {
-	// Parse JSON string to reconstruct K8sAction
-	// Using simple string parsing - can be improved with encoding/json if needed
-	action := &K8sAction{
-		Action:    "",
-		Resource:  "",
-		Namespace: "",
+	// Parse JSON string to reconstruct K8sAction with all 7 fields
+	var action K8sAction
+	if err := json.Unmarshal([]byte(jsonStr), &action); err != nil {
+		log.Printf("ERROR: Failed to parse action JSON: %v", err)
+		// Return empty action on error
+		return &K8sAction{}
 	}
-
-	// Simple JSON field extraction
-	if len(jsonStr) < 10 {
-		return action
-	}
-
-	// Extract action field
-	if idx := strings.Index(jsonStr, `"action":"`); idx >= 0 {
-		endIdx := strings.Index(jsonStr[idx+10:], `"`)
-		if endIdx >= 0 {
-			action.Action = jsonStr[idx+10 : idx+10+endIdx]
-		}
-	}
-
-	// Extract resource field
-	if idx := strings.Index(jsonStr, `"resource":"`); idx >= 0 {
-		endIdx := strings.Index(jsonStr[idx+12:], `"`)
-		if endIdx >= 0 {
-			action.Resource = jsonStr[idx+12 : idx+12+endIdx]
-		}
-	}
-
-	// Extract namespace field
-	if idx := strings.Index(jsonStr, `"namespace":"`); idx >= 0 {
-		endIdx := strings.Index(jsonStr[idx+13:], `"`)
-		if endIdx >= 0 {
-			action.Namespace = jsonStr[idx+13 : idx+13+endIdx]
-		}
-	}
-
-	return action
+	return &action
 }

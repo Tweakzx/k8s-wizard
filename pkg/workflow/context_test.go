@@ -404,7 +404,14 @@ func TestDependenciesWithContextManager(t *testing.T) {
 }
 
 func TestContextManagerPersistence(t *testing.T) {
-	manager, err := NewContextManager(nil)
+	// Create temp checkpointer for persistence testing
+	checkpointer, err := NewCheckpointerManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create checkpointer: %v", err)
+	}
+	defer checkpointer.Close()
+
+	manager, err := NewContextManager(checkpointer)
 	if err != nil {
 		t.Fatalf("NewContextManager failed: %v", err)
 	}
@@ -432,25 +439,27 @@ func TestContextManagerPersistence(t *testing.T) {
 		t.Errorf("context should contain 1 entry after AddEntry, got %d", len(retrieved.History))
 	}
 
-	// Clear should remove the context
+	// Clear should persist data to checkpoint but remove from memory
 	err = manager.Clear("thread-1")
 	if err != nil {
 		t.Fatalf("Clear failed: %v", err)
 	}
 
-	// Verify context is cleared - using HasContext to avoid creating new context
+	// Verify context is removed from memory
 	if manager.HasContext("thread-1") {
-		t.Errorf("context should not exist after Clear")
+		t.Errorf("context should not exist in memory after Clear")
 	}
 
-	// Get should create a new empty context
-	newContext := manager.Get("thread-1")
-	if newContext == nil {
-		t.Errorf("Get should create new context after Clear")
+	// Get should reload persisted data from checkpoint
+	reloadedContext := manager.Get("thread-1")
+	if reloadedContext == nil {
+		t.Errorf("Get should reload context from checkpoint after Clear")
 	}
 
-	if len(newContext.History) != 0 {
-		t.Errorf("new context should be empty after Clear, got %d entries", len(newContext.History))
+	if len(reloadedContext.History) != 1 {
+		t.Errorf("reloaded context should contain 1 entry (data should persist after Clear), got %d entries", len(reloadedContext.History))
+	} else if reloadedContext.History[0].Content != "test message" {
+		t.Errorf("reloaded context should preserve original content, got '%s'", reloadedContext.History[0].Content)
 	}
 }
 
