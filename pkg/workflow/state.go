@@ -57,10 +57,10 @@ type Dependencies struct {
 	K8sClient    k8s.Client
 	LLM          llm.Client
 	ModelName    string
-	ToolRegistry *tools.Registry // NEW - Phase 1
-	PromptLoader interface{}     // NEW - Phase 2 (placeholder)
-	SubGraphMgr  interface{}     // NEW - Phase 3 (placeholder)
-	ContextMgr   interface{}     // NEW - Phase 3 (placeholder)
+	ToolRegistry *tools.Registry    // NEW - Phase 1
+	PromptLoader interface{}        // NEW - Phase 2 (placeholder)
+	SubGraphMgr  interface{}        // NEW - Phase 3 (placeholder)
+	ContextMgr   *ContextManager    // NEW - Phase 3
 }
 
 // Status constants

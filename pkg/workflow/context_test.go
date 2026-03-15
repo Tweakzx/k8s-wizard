@@ -16,7 +16,10 @@ func TestContextManager(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	manager.AddEntry("thread-1", entry)
+	err := manager.AddEntry("thread-1", entry)
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
 	retrieved := manager.Get("thread-1")
 	if retrieved == nil {
@@ -56,7 +59,10 @@ func TestContextManager_AddEntry(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	manager.AddEntry("thread-1", entry)
+	err := manager.AddEntry("thread-1", entry)
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 	ctx := manager.Get("thread-1")
 
 	if len(ctx.History) != 1 {
@@ -88,7 +94,10 @@ func TestContextManager_AddEntry_WithAction(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	manager.AddEntry("thread-1", entry)
+	err := manager.AddEntry("thread-1", entry)
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 	ctx := manager.Get("thread-1")
 
 	if ctx.LastOperation == nil {
@@ -113,17 +122,23 @@ func TestContextManager_GetContextString(t *testing.T) {
 
 	// Add some entries
 	now := time.Now()
-	manager.AddEntry("thread-1", ConversationEntry{
+	err := manager.AddEntry("thread-1", ConversationEntry{
 		Role:      "user",
 		Content:   "Create a pod",
 		Timestamp: now,
 	})
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
-	manager.AddEntry("thread-1", ConversationEntry{
+	err = manager.AddEntry("thread-1", ConversationEntry{
 		Role:      "assistant",
 		Content:   "I'll create a pod for you",
 		Timestamp: now,
 	})
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
 	// Get context string
 	ctxStr := manager.GetContextString("thread-1", 10)
@@ -155,11 +170,14 @@ func TestContextManager_GetContextString_WithMaxHistory(t *testing.T) {
 	// Add more entries than maxHistory
 	now := time.Now()
 	for i := 0; i < 10; i++ {
-		manager.AddEntry("thread-1", ConversationEntry{
+		err := manager.AddEntry("thread-1", ConversationEntry{
 			Role:      "user",
 			Content:   "Message",
 			Timestamp: now,
 		})
+		if err != nil {
+			t.Fatalf("AddEntry failed: %v", err)
+		}
 	}
 
 	// Get context string with maxHistory=3
@@ -181,12 +199,15 @@ func TestContextManager_GetContextString_WithAction(t *testing.T) {
 		Namespace: "default",
 	}
 
-	manager.AddEntry("thread-1", ConversationEntry{
+	err := manager.AddEntry("thread-1", ConversationEntry{
 		Role:      "assistant",
 		Content:   "Creating deployment",
 		Action:    action,
 		Timestamp: time.Now(),
 	})
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
 	ctxStr := manager.GetContextString("thread-1", 10)
 
@@ -204,11 +225,14 @@ func TestContextManager_Clear(t *testing.T) {
 	manager, _ := NewContextManager(nil)
 
 	// Add some data
-	manager.AddEntry("thread-1", ConversationEntry{
+	err := manager.AddEntry("thread-1", ConversationEntry{
 		Role:      "user",
 		Content:   "test",
 		Timestamp: time.Now(),
 	})
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
 	// Verify it exists
 	if manager.Get("thread-1") == nil {
@@ -216,7 +240,10 @@ func TestContextManager_Clear(t *testing.T) {
 	}
 
 	// Clear it
-	manager.Clear("thread-1")
+	err = manager.Clear("thread-1")
+	if err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
 
 	// Verify it's gone - use HasContext to check without creating
 	if manager.HasContext("thread-1") {
@@ -236,17 +263,23 @@ func TestContextManager_Clear(t *testing.T) {
 func TestContextManager_MultipleThreads(t *testing.T) {
 	manager, _ := NewContextManager(nil)
 
-	manager.AddEntry("thread-1", ConversationEntry{
+	err := manager.AddEntry("thread-1", ConversationEntry{
 		Role:      "user",
 		Content:   "thread 1 message",
 		Timestamp: time.Now(),
 	})
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
-	manager.AddEntry("thread-2", ConversationEntry{
+	err = manager.AddEntry("thread-2", ConversationEntry{
 		Role:      "user",
 		Content:   "thread 2 message",
 		Timestamp: time.Now(),
 	})
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
 
 	ctx1 := manager.Get("thread-1")
 	ctx2 := manager.Get("thread-2")
@@ -265,6 +298,69 @@ func TestContextManager_MultipleThreads(t *testing.T) {
 
 	if ctx2.History[0].Content != "thread 2 message" {
 		t.Errorf("Thread 2 content mismatch")
+	}
+}
+
+func TestContextManager_AddEntry_EmptyThreadID(t *testing.T) {
+	manager, _ := NewContextManager(nil)
+
+	entry := ConversationEntry{
+		Role:      "user",
+		Content:   "test",
+		Timestamp: time.Now(),
+	}
+
+	err := manager.AddEntry("", entry)
+	if err == nil {
+		t.Error("AddEntry should return error for empty threadID")
+	}
+
+	expectedErr := "threadID cannot be empty"
+	if err.Error() != expectedErr {
+		t.Errorf("Expected error '%s', got '%s'", expectedErr, err.Error())
+	}
+}
+
+func TestContextManager_AddEntry_InvalidRole(t *testing.T) {
+	manager, _ := NewContextManager(nil)
+
+	entry := ConversationEntry{
+		Role:      "invalid",
+		Content:   "test",
+		Timestamp: time.Now(),
+	}
+
+	err := manager.AddEntry("thread-1", entry)
+	if err == nil {
+		t.Error("AddEntry should return error for invalid role")
+	}
+
+	if !containsString(err.Error(), "invalid role") {
+		t.Errorf("Expected error about invalid role, got '%s'", err.Error())
+	}
+}
+
+func TestContextManager_AddEntry_ValidRoles(t *testing.T) {
+	manager, _ := NewContextManager(nil)
+
+	// Test "user" role
+	err := manager.AddEntry("thread-1", ConversationEntry{
+		Role:      "user",
+		Content:   "test",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Errorf("AddEntry with 'user' role should succeed, got error: %v", err)
+	}
+
+	// Test "assistant" role
+	err = manager.AddEntry("thread-1", ConversationEntry{
+		Role:      "assistant",
+		Content:   "test",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Errorf("AddEntry with 'assistant' role should succeed, got error: %v", err)
 	}
 }
 
@@ -291,6 +387,73 @@ func TestConversationEntry_Actions(t *testing.T) {
 		t.Errorf("Expected action 'delete', got '%s'", entry.Action.Action)
 	}
 }
+
+func TestDependenciesWithContextManager(t *testing.T) {
+	mgr, err := NewContextManager(nil)
+	if err != nil {
+		t.Fatalf("NewContextManager failed: %v", err)
+	}
+
+	deps := Dependencies{
+		ContextMgr: mgr,
+	}
+
+	if deps.ContextMgr == nil {
+		t.Errorf("ContextMgr should not be nil in Dependencies")
+	}
+}
+
+func TestContextManagerPersistence(t *testing.T) {
+	manager, err := NewContextManager(nil)
+	if err != nil {
+		t.Fatalf("NewContextManager failed: %v", err)
+	}
+
+	entry := ConversationEntry{
+		Role:      "user",
+		Content:   "test message",
+		Action:    nil,
+		Timestamp: time.Now(),
+	}
+
+	// Add entry to context
+	err = manager.AddEntry("thread-1", entry)
+	if err != nil {
+		t.Fatalf("AddEntry failed: %v", err)
+	}
+
+	// Verify context exists and has the entry
+	retrieved := manager.Get("thread-1")
+	if retrieved == nil {
+		t.Errorf("context should be retrieved after AddEntry")
+	}
+
+	if len(retrieved.History) != 1 {
+		t.Errorf("context should contain 1 entry after AddEntry, got %d", len(retrieved.History))
+	}
+
+	// Clear should remove the context
+	err = manager.Clear("thread-1")
+	if err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
+
+	// Verify context is cleared - using HasContext to avoid creating new context
+	if manager.HasContext("thread-1") {
+		t.Errorf("context should not exist after Clear")
+	}
+
+	// Get should create a new empty context
+	newContext := manager.Get("thread-1")
+	if newContext == nil {
+		t.Errorf("Get should create new context after Clear")
+	}
+
+	if len(newContext.History) != 0 {
+		t.Errorf("new context should be empty after Clear, got %d entries", len(newContext.History))
+	}
+}
+
 
 // Helper functions
 func containsString(s, substr string) bool {
