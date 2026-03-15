@@ -99,28 +99,36 @@ func (l *Loader) loadEmbedded() error {
 }
 
 // GetIntentPrompt returns the formatted intent prompt for a user message.
-func (l *Loader) GetIntentPrompt(userMessage string) string {
+func (l *Loader) GetIntentPrompt(userMessage string, toolRegistry *tools.Registry) (string, error) {
 	prompt, ok := l.prompts["intent"]
 	if !ok {
-		return ""
+		return "", fmt.Errorf("intent prompt not found")
 	}
 
 	data := make(map[string]interface{})
 	data["UserMessage"] = userMessage
-	data["ToolDescriptions"] = l.formatToolDescriptions()
+
+	// Use tool descriptions from registry if provided, otherwise use static descriptions
+	if toolRegistry != nil {
+		data["ToolDescriptions"] = toolRegistry.GetLLMDescriptions()
+	} else {
+		data["ToolDescriptions"] = l.formatToolDescriptions()
+	}
 
 	// Render user prompt with data
 	tmpl, err := template.New("intent").Parse(prompt.User)
 	if err != nil {
-		return fmt.Sprintf("Error parsing template: %v", err)
+		return "", fmt.Errorf("failed to parse template: %w", err)
 	}
 
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Sprintf("Error executing template: %v", err)
+		return "", fmt.Errorf("failed to execute template: %w", err)
 	}
 
-	return buf.String()
+	// Prepend system prompt to user prompt
+	fullPrompt := prompt.System + "\n\n" + buf.String()
+	return fullPrompt, nil
 }
 
 // formatToolDescriptions formats tool descriptions for LLM prompting.
@@ -165,6 +173,21 @@ func (l *Loader) GetToolDescriptions(category string) []tools.ToolDescription {
 	}
 
 	return l.categories[category]
+}
+
+// UpdateFromRegistry updates tool descriptions from the tool registry.
+func (l *Loader) UpdateFromRegistry(registry *tools.Registry) error {
+	if registry == nil {
+		return fmt.Errorf("registry cannot be nil")
+	}
+
+	// Clear existing static tool descriptions
+	l.tools = make(map[string]tools.ToolDescription)
+	l.categories = make(map[string][]tools.ToolDescription)
+
+	// The registry will be used directly in GetIntentPrompt via GetLLMDescriptions
+	// This method prepares the loader to use dynamic tool descriptions
+	return nil
 }
 
 // GetPrompt returns a prompt by name.
