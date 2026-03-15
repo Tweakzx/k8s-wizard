@@ -374,11 +374,11 @@ func generateActionPreview(action *K8sAction) *models.ActionPreview {
 
 ---
 
-## Tool System Architecture
+## 工具系统架构
 
-The tool system provides a uniform abstraction for K8s operations:
+工具系统为 K8s 操作提供统一的抽象层：
 
-### Tool Interface
+### 工具接口
 ```go
 type Tool interface {
     Name() string
@@ -390,35 +390,35 @@ type Tool interface {
 }
 ```
 
-### Registry Pattern
-The tool registry enables dynamic discovery and routing of tools:
-- Tools register themselves via `registry.Register(tool)`
-- LLM can query available tools via `registry.GetLLMDescriptions()`
-- Tools execute via `registry.Execute(ctx, name, args)`
+### 注册表模式
+工具注册表支持动态发现和路由：
+- 工具通过 `registry.Register(tool)` 自注册
+- LLM 可通过 `registry.GetLLMDescriptions()` 查询可用工具
+- 工具通过 `registry.Execute(ctx, name, args)` 执行
 
-### Handler Pattern
-Resource handlers bridge K8s API to tools:
-- One handler per resource type (deployment, pod, service, etc.)
-- Each handler defines operations (create, get, scale, delete)
-- Handlers automatically register their operations as tools
+### 处理器模式
+资源处理器连接 K8s API 和工具：
+- 每种资源类型一个处理器（deployment、pod、service 等）
+- 每个处理器定义操作（create、get、scale、delete）
+- 处理器自动将其操作注册为工具
 
-### Sub-Graphs
-Reusable workflow fragments for complex operations:
-- LogsSubGraph: Fetch and display pod logs
-- ExecSubGraph: Execute commands in pods
-- DiagnosticsSubGraph: Multi-step pod diagnostics
+### 子图
+可复用的工作流片段，用于复杂操作（计划中的实现）：
+- 子图将封装多步骤工作流，如日志获取、Pod 执行和诊断
+- 接口定义在 `pkg/workflow/subgraph.go`
+- 具体实现将在后续阶段开发
 
-### Context Management
-ContextManager maintains conversation history:
-- Tracks last operation, resource, namespace
-- Persists to SQLite via CheckpointerManager
-- Provides formatted context for LLM
+### 上下文管理
+ContextManager 维护对话历史：
+- 跟踪上次操作、资源、命名空间
+- 通过 CheckpointerManager 持久化到 SQLite
+- 为 LLM 提供格式化的上下文
 
-### Migration Strategy
-The new tool system coexists with existing code:
-- Feature flags control routing (UseToolRouter, UseSubGraph)
-- Old code paths remain functional during migration
-- Incremental adoption per resource type
+### 迁移策略
+新工具系统设计用于渐进式采用：
+- 工具注册表和处理器与现有代码路径共存
+- 按资源类型逐步迁移
+- 无需功能标志 - 根据操作/资源类型自动路由
 
 ---
 

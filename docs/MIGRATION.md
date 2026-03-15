@@ -47,29 +47,20 @@ err := handler.RegisterTools(deps.ToolRegistry)
 ```
 
 ### Step 3: Enable Routing
-Set feature flag for the resource:
-```go
-state.UseToolRouter = true
-```
+Note: The tool system is designed to coexist with existing code paths. Once handlers are registered, operations will automatically route through the tool registry based on the action and resource type.
 
-## Feature Flags
+## Architecture Evolution
 
-| Flag | Purpose | Default |
-|------|---------|---------|
-| UseToolRouter | Route through tool registry | false |
-| UseSubGraph | Route to sub-graphs | false |
-| TargetSubGraph | Specific sub-graph name | "" |
+The new tool system is being incrementally adopted:
+- Phase 1: Tool registry and handler abstraction (completed)
+- Phase 2: Sub-graph integration (in progress)
+- Phase 3: Context-aware routing (planned)
+
+During migration, both old and new code paths remain available, allowing for gradual adoption per resource type.
 
 ## Testing
 
 Verify migration:
 1. Run unit tests: `go test ./pkg/k8s/handlers/...`
 2. Run integration tests: `go test ./test/integration/...`
-3. Test in dev environment with feature flag enabled
-
-## Rollback
-
-If issues occur, disable feature flag to revert to old code path:
-```go
-state.UseToolRouter = false
-```
+3. Test in development environment
