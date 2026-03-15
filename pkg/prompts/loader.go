@@ -78,9 +78,9 @@ func (l *Loader) loadEmbedded() error {
 	if err == nil {
 		var toolsConfig struct {
 			Tools []struct {
-				Category   string                      `yaml:"category"`
-				Description string                      `yaml:"description"`
-				Tools      []tools.ToolDescription     `yaml:"tools"`
+				Category    string                  `yaml:"category"`
+				Description string                  `yaml:"description"`
+				Tools       []tools.ToolDescription `yaml:"tools"`
 			} `yaml:"tools"`
 		}
 

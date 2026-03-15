@@ -163,4 +163,3 @@ func TestGetIntentPrompt_WithRegistry(t *testing.T) {
 		t.Errorf("prompt should contain user message with empty registry, got: %s", prompt)
 	}
 }
-

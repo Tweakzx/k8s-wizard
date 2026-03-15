@@ -47,8 +47,8 @@
 // # Tool Descriptions
 //
 // The loader supports two modes for tool descriptions:
-//   1. Static: Loaded from tools.yaml file (fallback mode)
-//   2. Dynamic: Retrieved from a tools.Registry via GetLLMDescriptions()
+//  1. Static: Loaded from tools.yaml file (fallback mode)
+//  2. Dynamic: Retrieved from a tools.Registry via GetLLMDescriptions()
 //
 // When a tool registry is provided to GetIntentPrompt, dynamic descriptions
 // are used. Otherwise, static descriptions are used as fallback.
