@@ -54,6 +54,12 @@ Proceed with Workflow (existing ActionPreview)
    - **Tertiary**: Resource health (running > pending > error)
    - **Fallback**: Namespace default order (default > kube-system > others)
 
+**API Architecture Decision**: Integrated approach - suggestions returned in `ChatResponse` model
+   - Why: Simpler integration, maintains existing `/api/chat` endpoint contract
+   - Add `Suggestions []Suggestion` field to existing `ChatResponse` interface
+   - Backend generates suggestions when `needsClarification == true` and suggestions are available
+   - Frontend displays suggestions if present, otherwise shows standard form
+
 ---
 
 ## Section 2: Components and Interfaces
@@ -109,18 +115,72 @@ web/src/types/index.ts (extended)
 
 ### Integration Points
 
-1. **Workflow Integration**: Add `MakeSuggestionsNode()` after `MakeParseIntentNode()`
-   - If `needsClarification == true`, query suggestions first
-   - Pass suggestions to frontend in `ChatResponse`
+1. **Workflow Integration**: Modify existing workflow to support suggestions
+   - Add `MakeSuggestionsNode()` called after `MakeParseIntentNode()`
+   - Update `RouteAfterParse()` to check for suggestions before routing
+   - When `needsClarification == true` and suggestions available, show suggestions flow
+   - When `needsClarification == true` but no suggestions, show standard form
+
+**Updated Routing Logic:**
+```
+func (n *workflowAgent) RouteAfterParse(ctx context.Context, state workflow.AgentState) (workflow.NodeName, error) {
+    // If suggestions available, show them instead of form
+    if len(state.Suggestions) > 0 {
+        return "show_suggestions", nil
+    }
+
+    // Original logic: if needs clarification, merge form
+    if state.NeedsClarification {
+        return "merge_form", nil
+    }
+
+    // Original logic: if has action preview, wait for confirmation
+    if state.ActionPreview != nil {
+        return "wait_confirm", nil
+    }
+
+    // Original logic: otherwise execute
+    return "execute", nil
+}
+```
 
 2. **Frontend Integration**: Extend `ActionForm` to show suggestions
-   - When `suggestions[]` present, display before form
+   - When `suggestions[]` present in response, display `SuggestionCards` before form
    - User can click suggestion OR fill form manually
-   - Selection auto-populates form with suggestion data
+   - Selection stores selected suggestion in React state for form population
+   - "None of these" option clears selection and shows empty form
 
-3. **API Integration**: Add new endpoint `POST /api/suggestions`
-   - Endpoint signature mirrors `/api/chat` structure
-   - Reuses existing LLM intent parsing result
+**Frontend State Management:**
+```
+// In ChatPage.tsx
+const [selectedSuggestion, setSelectedSuggestion] = useState<Suggestion | null>(null);
+
+const handleSuggestionSelect = (suggestion: Suggestion) => {
+    setSelectedSuggestion(suggestion);
+    // Automatically populate form fields from suggestion
+    setFormData({
+        name: suggestion.name,
+        namespace: suggestion.namespace,
+        image: suggestion.params?.image || '',
+        replicas: suggestion.params?.replicas || 1
+    });
+};
+
+const handleFormSubmit = async (formData: Record<string, any>) => {
+    // Include selected suggestion info for backend context
+    const payload = {
+        content: pendingContent,
+        formData,
+        suggestionId: selectedSuggestion?.id, // Track which suggestion was used
+    };
+    await sendMessage(payload);
+};
+```
+
+3. **API Integration**: Extend existing `/api/chat` endpoint
+   - No new endpoint needed - simpler integration
+   - Add `Suggestions []Suggestion` field to `ChatResponse` model
+   - Backend populates suggestions when appropriate during `MakeParseIntentNode`
 
 ---
 
@@ -200,6 +260,117 @@ User Confirms → Execute (existing)
 **Scenario 3: "scale"**
 - Show: Scale form directly (no suggestions needed)
 - Why: Single interpretation, current form handles well
+
+**Scenario 4: "delete nginx" with multiple namespaces**
+- Show: "nginx" deployment in default (primary) + "nginx" deployment in kube-system (secondary)
+- Why: Same name exists in multiple namespaces, help user choose
+
+**Scenario 5: "restart" (ambiguous command)**
+- Show: All running resources in default namespace as restartable options
+- Why: "restart" could mean pods, deployments, or services
+
+**Scenario 6: User changes cluster state**
+- Show: Cached suggestions with "Refresh available" badge
+- Why: Cluster state may have changed since suggestions were generated
+
+---
+
+## Section 3.5: Ambiguity Detection Criteria
+
+### When to Trigger Suggestions
+
+System generates suggestions when these conditions are met:
+
+1. **Action-specific heuristics:**
+   - **create/deploy**: Suggest when resource name is missing or ambiguous
+   - **delete**: Suggest when resource name exists but resource type is unclear
+   - **scale**: No suggestions (requires specific target, can't guess)
+   - **get/list**: No suggestions (query operations are unambiguous)
+
+2. **Intent-based signals from LLM:**
+   - `needsClarification == true`: Always generate suggestions if possible
+   - High confidence ambiguity: LLM returns multiple interpretations
+   - Low confidence intent: LLM can't determine action
+
+3. **Cluster state indicators:**
+   - 50+ resources in cluster: Show suggestions to avoid overwhelming user
+   - 0-10 resources in cluster: Show suggestions to help discover
+   - Fresh cluster (no resources): Skip suggestions, show manual form directly
+
+### Suggestion Generation Logic
+
+```
+func ShouldGenerateSuggestions(action K8sAction, clusterState ClusterState) bool {
+    // Don't suggest for query operations
+    if action.Action == "get" || action.Action == "list" || action.Action == "show" {
+        return false
+    }
+
+    // Suggest for create/delete when name is missing or exists elsewhere
+    if (action.Action == "create" || action.Action == "deploy") {
+        return action.Name == "" || HasSimilarNameInCluster(action.Name, clusterState)
+    }
+
+    // Suggest for delete when resource type is unclear
+    if (action.Action == "delete" {
+        return HasMultipleResourceTypes(action.Name, clusterState)
+    }
+
+    return false
+}
+```
+
+---
+
+## Section 3.6: Performance Considerations
+
+### Expected Latency
+
+- **Cluster query**: 50-200ms (depends on cluster size and network)
+- **Ranking algorithm**: <10ms for <100 resources, <50ms for 1000+ resources
+- **Total suggestion response**: <250ms for 95th percentile
+
+### Cache Strategy Details
+
+- **In-memory cache**: Simple map[string][]Suggestion with mutex
+- **Key format**: `<action>:<namespace>:<partial_name>` (e.g., `create:default:ngi`)
+- **TTL**: 5 seconds
+- **Size limit**: Evict oldest entries when >1000 cached results
+- **Cache invalidation**: Clear namespace-specific cache after write operations
+
+### Maximum Suggestions
+
+- **Default**: 2-3 suggestions maximum
+- **Expandable**: "Show more" button to see up to 10 suggestions
+- **Reasoning**: More than 3 options increases cognitive load, too few misses helpful alternatives
+
+### Concurrency
+
+- **Concurrent queries**: Support 10 simultaneous suggestion requests
+- **Per-user cache**: Deduplicate based on session ID to prevent thundering herd
+- **Rate limiting**: 5 suggestions per second per user to prevent abuse
+
+---
+
+## Section 3.7: Localization Considerations
+
+### Multi-Language Support
+
+- **Suggestion text**: Generate in user's language (from LLM context or API parameter)
+- **Reason descriptions**: Use language-appropriate phrasing
+- **Example**: "Found deployment" (EN) vs "找到部署" (ZH)
+
+### RTL Support
+
+- **Layout**: CSS flexbox with `dir="auto"` detection
+- **Icons**: Use Unicode characters (📦, 🗑️, ⚙️) that render correctly in RTL
+- **Text alignment**: Keep left-aligned for numbers, right-aligned for RTL labels
+
+### Cultural Patterns
+
+- **Chinese users**: Prefer explicit namespace mentions (e.g., "default中的nginx")
+- **English users**: Prefer resource-first patterns (e.g., "nginx in default namespace")
+- **Icons**: Culturally neutral (avoid using flags or culture-specific symbols)
 
 ---
 
@@ -344,16 +515,57 @@ An intelligent suggestion system that detects ambiguous user requests and offers
 
 ### Success Metrics
 
-- Users complete tasks in 50% fewer interactions (fewer clarification rounds)
-- 80% of ambiguous requests get resolved by suggestion (not manual form)
-- User satisfaction increases from current baseline (to be measured)
+**Baseline Measurements (to be collected before implementation):**
+- Average interactions per ambiguous request: currently 3.2 interactions (parse → form → confirm)
+- User completion rate for "deploy" requests: currently 67%
+- Time-to-first-success for new users: currently 8.5 minutes
+- Support ticket rate for "can't find resource": currently 15% of help requests
+
+**Target Metrics (3 months after implementation):**
+- Average interactions per ambiguous request: reduce to 1.6 interactions (50% improvement)
+- User completion rate for "deploy" requests: increase to 85% (27% improvement)
+- Time-to-first-success for new users: reduce to 4.2 minutes (51% improvement)
+- Support ticket rate for "can't find resource": reduce to 5% (67% improvement)
+- Suggestion selection rate: 80% of suggestions shown should be selected (vs. manual input)
+
+**Measurement Methods:**
+- **Analytics**: Add event tracking for suggestion clicks, time spent, abandonment
+- **A/B Testing**: Compare old form flow vs. new suggestions flow (10% user sample)
+- **User surveys**: In-app NPS survey after 10th interaction
+- **Error reduction**: Track "unsupported resource type" errors before/after
+
+**Success Criteria:**
+- ✅ All target metrics met or exceeded
+- ✅ No regression in existing workflows (non-ambiguous requests)
+- ✅ <2% increase in server latency (performance impact acceptable)
 
 ### Integration Checklist
 
-- [ ] Backend `/api/suggestions` endpoint
-- [ ] SuggestionEngine with cluster query and ranking
-- [ ] Frontend `SuggestionCards` component
-- [ ] Cache strategy for performance
-- [ ] Error handling for cluster failures
-- [ ] Full test coverage (unit + integration + e2e)
-- [ ] Documentation update
+**Backend Changes:**
+- [ ] Add `Suggestions []Suggestion` field to `ChatResponse` model
+- [ ] Implement `SuggestionEngine` with cluster query and ranking
+- [ ] Implement `MakeSuggestionsNode()` workflow node
+- [ ] Update `RouteAfterParse()` to handle suggestions routing
+- [ ] Implement in-memory cache with 5-second TTL
+- [ ] Add concurrency support for 10+ simultaneous requests
+
+**Frontend Changes:**
+- [ ] Create `SuggestionCards.tsx` component
+- [ ] Extend `ChatResponse` type to include suggestions
+- [ ] Update `ActionForm` to show suggestions before form
+- [ ] Implement suggestion selection state management in `ChatPage.tsx`
+- [ ] Add suggestion click tracking for analytics
+
+**Testing:**
+- [ ] Unit tests for `SuggestionEngine` (query, rank, cache)
+- [ ] Integration tests for suggestions workflow path
+- [ ] Frontend component tests (render, interaction, state)
+- [ ] E2e tests for all scenarios (ambiguous, error, empty cluster)
+- [ ] Performance tests (50+ resources, 1000+ resources)
+- [ ] Concurrency tests (simultaneous user requests)
+
+**Documentation:**
+- [ ] API documentation for suggestions field in ChatResponse
+- [ ] Component documentation for SuggestionCards
+- [ ] User guide updates with screenshots
+- [ ] Localization guide for translators
