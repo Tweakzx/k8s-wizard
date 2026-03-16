@@ -36,6 +36,7 @@ export interface ChatResponse {
   clarification?: ClarificationRequest;
   actionPreview?: ActionPreview;
   status?: 'needs_info' | 'needs_confirm' | 'executed';
+  suggestions?: Suggestion[];
 }
 
 export interface ClarificationRequest {
@@ -91,4 +92,16 @@ export interface ProviderInfo {
   name: string;
   models: string[];
   baseUrl: string;
+}
+
+export interface Suggestion {
+  type: string;
+  action: string;
+  resource: string;
+  name: string;
+  namespace: string;
+  reason: string;
+  confidence: number;
+  existing: boolean;
+  id?: string;
 }
