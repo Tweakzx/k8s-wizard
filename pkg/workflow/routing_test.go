@@ -67,6 +67,22 @@ func TestRouteAfterParse(t *testing.T) {
 			},
 			expected: "merge_form",
 		},
+		{
+			name: "K8s operation with suggestions - show_suggestions",
+			state: AgentState{
+				Status:         StatusPending,
+				IsK8sOperation: true,
+				Suggestions: []models.Suggestion{
+					{Type: "reuse", Name: "nginx", ID: "reuse-nginx-123"},
+				},
+				NeedsClarification: false,
+				Action: &K8sAction{
+					Action:   "create",
+					Resource: "deployment",
+				},
+			},
+			expected: "show_suggestions",
+		},
 	}
 
 	for _, tt := range tests {

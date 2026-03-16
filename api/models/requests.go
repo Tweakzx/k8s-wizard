@@ -11,13 +11,14 @@ type ChatRequest struct {
 
 // ChatResponse 聊天响应
 type ChatResponse struct {
-	Result        string               `json:"result"`
-	Message       string               `json:"message,omitempty"`
-	Error         string               `json:"error,omitempty"`
-	Model         string               `json:"model,omitempty"`
-	Clarification *ClarificationRequest `json:"clarification,omitempty"`
-	ActionPreview *ActionPreview       `json:"actionPreview,omitempty"`
-	Status        string               `json:"status,omitempty"` // pending, confirmed, executed
+	Result        string                 `json:"result"`
+	Message       string                 `json:"message,omitempty"`
+	Error         string                 `json:"error,omitempty"`
+	Model         string                 `json:"model,omitempty"`
+	Clarification *ClarificationRequest  `json:"clarification,omitempty"`
+	ActionPreview *ActionPreview         `json:"actionPreview,omitempty"`
+	Status        string                 `json:"status,omitempty"` // pending, confirmed, executed
+	Suggestions   []Suggestion            `json:"suggestions,omitempty"` // NEW: Add suggestions field
 }
 
 // HealthResponse 健康检查响应

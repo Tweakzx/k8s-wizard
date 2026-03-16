@@ -9,3 +9,15 @@ func TestSuggestionModelsCompile(t *testing.T) {
 	_ = Suggestion{}
 	_ = SuggestionRequest{}
 }
+
+// Test that ChatResponse includes Suggestions field
+func TestChatResponseWithSuggestions(t *testing.T) {
+	response := ChatResponse{}
+	response.Suggestions = []Suggestion{
+		{Type: "reuse", Name: "nginx"},
+	}
+
+	if len(response.Suggestions) == 0 {
+		t.Error("expected suggestions to be present")
+	}
+}

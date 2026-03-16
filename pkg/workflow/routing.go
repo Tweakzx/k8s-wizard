@@ -18,6 +18,11 @@ func RouteAfterParse(ctx context.Context, state AgentState) string {
 		return lgg.END
 	}
 
+	// If suggestions available, show them instead of form
+	if len(state.Suggestions) > 0 {
+		return "show_suggestions"
+	}
+
 	// Otherwise, proceed to merge form data
 	return "merge_form"
 }
