@@ -2,6 +2,7 @@
 package k8s
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -9,6 +10,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 )
 
 // Client defines the interface for Kubernetes operations.
@@ -25,16 +29,27 @@ type Client interface {
 
 	// DeleteResource deletes a resource of the specified type and name.
 	DeleteResource(ctx context.Context, namespace, name, resourceType string) (string, error)
+
+	// GetPodLogs fetches pod logs with optional container and tail lines.
+	GetPodLogs(ctx context.Context, namespace, pod, container string, tailLines int64) (string, error)
+
+	// ExecPod executes a command in a pod's container.
+	ExecPod(ctx context.Context, namespace, pod, container, command string) (string, error)
 }
 
 // KubernetesClient implements Client using kubernetes.Interface.
 type KubernetesClient struct {
 	clientset kubernetes.Interface
+	config    *rest.Config
 }
 
 // NewClient creates a new KubernetesClient from a kubernetes.Interface.
-func NewClient(clientset kubernetes.Interface) *KubernetesClient {
-	return &KubernetesClient{clientset: clientset}
+// The config parameter can be nil for read-only operations.
+func NewClient(clientset kubernetes.Interface, config *rest.Config) *KubernetesClient {
+	return &KubernetesClient{
+		clientset: clientset,
+		config:    config,
+	}
 }
 
 // CreateDeployment creates a new deployment.
@@ -247,4 +262,97 @@ func (c *KubernetesClient) DeleteResource(ctx context.Context, namespace, name, 
 	default:
 		return "", fmt.Errorf("unsupported resource type for deletion: %s", resourceType)
 	}
+}
+
+// GetPodLogs fetches pod logs.
+func (c *KubernetesClient) GetPodLogs(ctx context.Context, namespace string, pod string, container string, tailLines int64) (string, error) {
+	// Validate parameters
+	if namespace == "" {
+		return "", fmt.Errorf("namespace cannot be empty")
+	}
+	if pod == "" {
+		return "", fmt.Errorf("pod name cannot be empty")
+	}
+	if tailLines <= 0 {
+		return "", fmt.Errorf("tailLines must be positive, got: %d", tailLines)
+	}
+
+	req := c.clientset.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
+		Container: container,
+		TailLines: &tailLines,
+	})
+
+	logs, err := req.Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer logs.Close()
+
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(logs); err != nil {
+		return "", fmt.Errorf("read logs failed: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// ExecPod executes a command in a pod.
+func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod string, container string, command string) (string, error) {
+	// Validate parameters
+	if namespace == "" {
+		return "", fmt.Errorf("namespace cannot be empty")
+	}
+	if pod == "" {
+		return "", fmt.Errorf("pod name cannot be empty")
+	}
+	if container == "" {
+		return "", fmt.Errorf("container cannot be empty")
+	}
+	if command == "" {
+		return "", fmt.Errorf("command cannot be empty")
+	}
+
+	// Check config is available for SPDY executor
+	if c.config == nil {
+		return "", fmt.Errorf("client config is nil, cannot execute pod commands")
+	}
+
+	// Split command into args (simple shell -c wrapper)
+	args := []string{"sh", "-c", command}
+
+	// Build exec request
+	req := c.clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(namespace).
+		Name(pod).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: container,
+			Command:   args,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	// Create executor
+	executor, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
+	if err != nil {
+		return "", fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	// Capture output
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+
+	// Execute command
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: buf,
+		Stderr: errBuf,
+	})
+	if err != nil {
+		return "", fmt.Errorf("exec command failed: %w: %s", err, errBuf.String())
+	}
+
+	return buf.String(), nil
 }

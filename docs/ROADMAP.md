@@ -1,5 +1,26 @@
 # K8s Wizard Development Roadmap
 
+## Completed
+
+- [x] Tool system with Registry pattern
+- [x] Resource handler abstraction
+- [x] Prompt loader with YAML templates
+- [x] Sub-graph interface for reusable workflows
+- [x] ContextManager for conversation tracking
+
+## In Progress
+
+- [ ] Migration of all existing resources to handlers
+- [ ] Sub-graph implementation (logs, exec, diagnostics)
+
+## Future
+
+- [ ] Additional resource handlers (StatefulSet, DaemonSet, ConfigMap, Secret)
+- [ ] Advanced sub-graphs (multi-pod workflows, deployment strategies)
+- [ ] Enhanced context awareness (cross-session context, semantic search)
+
+---
+
 ## 📊 Current Status (v0.1.0)
 
 ### ✅ Implemented Features
@@ -219,25 +240,25 @@ AI monitors cluster and suggests:
 ## 📅 Timeline
 
 ```
-2025 Q1 (v0.2.0)
+2026 Q1 (v0.2.0)
 ├── Session Management
 ├── Streaming Response
 ├── Markdown Rendering
 └── Safety Confirmation
 
-2025 Q2 (v0.3.0)
+2026 Q2 (v0.3.0)
 ├── Logs Support
 ├── Exec Support
 ├── Describe Support
 └── Extended Resources
 
-2025 Q3 (v0.4.0)
+2026 Q3 (v0.4.0)
 ├── YAML Editor
 ├── Templates
 ├── History
 └── Multi-cluster
 
-2025 Q4 (v0.5.0)
+2026 Q4 (v0.5.0)
 ├── Authentication
 ├── Audit Logging
 ├── Metrics
@@ -301,5 +322,5 @@ AI monitors cluster and suggests:
 
 ---
 
-*Last Updated: 2025-03-01*
+*Last Updated: 2026-03-15*
 *Version: 0.1.1*

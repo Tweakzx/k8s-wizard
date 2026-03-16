@@ -1,0 +1,31 @@
+name: tool_descriptions
+version: "1.0.0"
+description: Tool descriptions for LLM prompting
+
+# Note: These are static descriptions. In production, tools can register
+# themselves dynamically, making this file optional.
+tools:
+  - category: k8s
+    description: Kubernetes 资源操作
+    tools:
+      - name: create_deployment
+        description: 创建一个新的 Deployment 资源
+        parameters:
+          - name: name
+            type: string
+            description: Deployment 名称
+            required: true
+          - name: namespace
+            type: string
+            description: 命名空间
+            required: false
+            default: default
+          - name: image
+            type: string
+            description: 容器镜像
+            required: true
+          - name: replicas
+            type: number
+            description: 副本数量
+            required: false
+            default: 1
