@@ -7,6 +7,7 @@ export interface Message {
   clarification?: ClarificationRequest;
   actionPreview?: ActionPreview;
   status?: 'needs_info' | 'needs_confirm' | 'executed';
+  suggestions?: Suggestion[];
 }
 
 export interface NavItem {
