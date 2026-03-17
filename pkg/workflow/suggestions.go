@@ -78,6 +78,34 @@ func buildCacheKey(req models.SuggestionRequest) string {
 	return fmt.Sprintf("%s:%s:%s", req.Action, req.Namespace, req.Name)
 }
 
+// MakeSuggestionsNode creates a workflow node that generates suggestions based on parsed intent
+func MakeSuggestionsNode(engine *SuggestionEngine) NodeFunc {
+	return func(ctx context.Context, state AgentState) (AgentState, error) {
+		// Generate suggestions based on parsed action
+		if state.Action == nil {
+			return state, fmt.Errorf("no action found in state")
+		}
+
+		req := models.SuggestionRequest{
+			Action:    state.Action.Action,
+			Resource:  state.Action.Resource,
+			Name:      state.Action.Name,
+			Namespace: state.Action.Namespace,
+		}
+
+		suggestions, err := engine.QueryCluster(ctx, req)
+		if err != nil {
+			logger.Error("failed to generate suggestions", "error", err)
+			// Continue without suggestions - will show standard form
+			return state, nil
+		}
+
+		state.Suggestions = suggestions
+		logger.Debug("generated suggestions", "count", len(suggestions))
+		return state, nil
+	}
+}
+
 func findNameMatches(name string, deployments string, cache map[string][]models.Suggestion) []models.Suggestion {
 	var matches []models.Suggestion
 

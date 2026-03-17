@@ -54,6 +54,9 @@ type GraphAgent struct {
 
 // NewGraphAgent creates a new GraphAgent.
 func NewGraphAgent(k8sClient k8s.Client, llmClient llm.Client, modelName string) (*GraphAgent, error) {
+	// Create suggestion engine
+	suggestionEngine := workflow.NewSuggestionEngine(k8sClient)
+
 	deps := &workflow.Dependencies{
 		K8sClient:    k8sClient,
 		LLM:          llmClient,
@@ -63,6 +66,7 @@ func NewGraphAgent(k8sClient k8s.Client, llmClient llm.Client, modelName string)
 		PromptLoader: nil,
 		SubGraphMgr:  nil,
 		ContextMgr:   nil,
+		SuggestionEngine: suggestionEngine,
 	}
 
 	compiledGraph, err := workflow.NewK8sWizardGraph(deps)
@@ -206,6 +210,9 @@ type GraphAgentWithCheckpointer struct {
 
 // NewGraphAgentWithCheckpointer creates a new GraphAgent with session persistence.
 func NewGraphAgentWithCheckpointer(k8sClient k8s.Client, llmClient llm.Client, modelName string, checkpointer *workflow.CheckpointerManager) (*GraphAgentWithCheckpointer, error) {
+	// Create suggestion engine
+	suggestionEngine := workflow.NewSuggestionEngine(k8sClient)
+
 	deps := &workflow.Dependencies{
 		K8sClient:    k8sClient,
 		LLM:          llmClient,
@@ -215,6 +222,7 @@ func NewGraphAgentWithCheckpointer(k8sClient k8s.Client, llmClient llm.Client, m
 		PromptLoader: nil,
 		SubGraphMgr:  nil,
 		ContextMgr:   nil,
+		SuggestionEngine: suggestionEngine,
 	}
 
 	compiledGraph, err := workflow.NewK8sWizardGraphWithCheckpointer(deps, checkpointer.GetStore())

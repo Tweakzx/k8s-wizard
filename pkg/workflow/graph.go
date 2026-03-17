@@ -14,6 +14,8 @@ func NewK8sWizardGraph(deps *Dependencies) (*lgg.StateRunnable[AgentState], erro
 		MakeParseIntentNode(deps.LLM))
 	g.AddNode("merge_form", "Merge form data into action",
 		MakeMergeFormNode())
+	g.AddNode("show_suggestions", "Show intelligent suggestions",
+		MakeSuggestionsNode(deps.SuggestionEngine))
 	g.AddNode("check_clarify", "Check if clarification is needed",
 		MakeCheckClarifyNode())
 	g.AddNode("generate_preview", "Generate action preview",
@@ -30,6 +32,7 @@ func NewK8sWizardGraph(deps *Dependencies) (*lgg.StateRunnable[AgentState], erro
 	g.AddConditionalEdge("generate_preview", RouteAfterPreview)
 
 	// Add regular edges
+	g.AddEdge("show_suggestions", "merge_form")
 	g.AddEdge("merge_form", "check_clarify")
 	g.AddEdge("execute", lgg.END)
 
@@ -47,6 +50,8 @@ func NewK8sWizardGraphWithCheckpointer(deps *Dependencies, store lgg.CheckpointS
 		MakeParseIntentNode(deps.LLM))
 	g.AddNode("merge_form", "Merge form data into action",
 		MakeMergeFormNode())
+	g.AddNode("show_suggestions", "Show intelligent suggestions",
+		MakeSuggestionsNode(deps.SuggestionEngine))
 	g.AddNode("check_clarify", "Check if clarification is needed",
 		MakeCheckClarifyNode())
 	g.AddNode("generate_preview", "Generate action preview",
@@ -63,6 +68,7 @@ func NewK8sWizardGraphWithCheckpointer(deps *Dependencies, store lgg.CheckpointS
 	g.AddConditionalEdge("generate_preview", RouteAfterPreview)
 
 	// Add regular edges
+	g.AddEdge("show_suggestions", "merge_form")
 	g.AddEdge("merge_form", "check_clarify")
 	g.AddEdge("execute", lgg.END)
 

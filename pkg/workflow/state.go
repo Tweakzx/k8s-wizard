@@ -64,6 +64,7 @@ type Dependencies struct {
 	PromptLoader interface{}        // NEW - Phase 2 (placeholder)
 	SubGraphMgr  interface{}        // NEW - Phase 3 (placeholder)
 	ContextMgr   *ContextManager    // NEW - Phase 3
+	SuggestionEngine *SuggestionEngine // NEW - Intelligent suggestions
 }
 
 // Status constants
