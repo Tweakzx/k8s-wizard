@@ -23,6 +23,7 @@ func MakeParseIntentNode(llmClient llm.Client) NodeFunc {
 		}
 
 		prompt := buildIntentPrompt(state.UserMessage)
+
 		llmOutput, err := llmClient.Chat(ctx, prompt)
 		if err != nil {
 			state.Error = fmt.Errorf("LLM call failed: %w", err)
@@ -42,6 +43,11 @@ func MakeParseIntentNode(llmClient llm.Client) NodeFunc {
 
 		state.Action = &action
 		state.IsK8sOperation = action.IsK8sOperation
+
+		// Add resource type defaulting if empty
+		if action.Resource == "" {
+			action.Resource = "deployment"
+		}
 
 		if !action.IsK8sOperation {
 			state.Reply = action.Reply

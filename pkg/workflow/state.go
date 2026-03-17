@@ -39,6 +39,9 @@ type AgentState struct {
 
 	// === Chat Response (for non-K8s operations) ===
 	Reply string // AI 对闲聊的回复
+
+	// === Suggestions ===
+	Suggestions []models.Suggestion // 智能建议（从集群状态生成）
 }
 
 // K8sAction represents a parsed K8s operation intent.
@@ -61,6 +64,7 @@ type Dependencies struct {
 	PromptLoader interface{}        // NEW - Phase 2 (placeholder)
 	SubGraphMgr  interface{}        // NEW - Phase 3 (placeholder)
 	ContextMgr   *ContextManager    // NEW - Phase 3
+	SuggestionEngine *SuggestionEngine // NEW - Intelligent suggestions
 }
 
 // Status constants

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavItem, QuickAction } from '../types';
+import { NavItem, QuickAction, Suggestion } from '../types';
 import { Header } from '../components/Header';
 import { Sidebar } from '../components/Sidebar';
 import { MessageList } from '../components/MessageList';
@@ -13,6 +13,7 @@ export const ChatPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [pendingContent, setPendingContent] = useState<string>('');
   const [pendingFormData, setPendingFormData] = useState<Record<string, any> | undefined>();
+  const [selectedSuggestion, setSelectedSuggestion] = useState<Suggestion | null>(null);
   const { messages, addMessage, updateMessage, clearMessages } = useMessages();
   const connected = useConnectionStatus();
 
@@ -96,7 +97,18 @@ export const ChatPage: React.FC = () => {
 
     const msgId = (Date.now() + 1).toString();
 
-    if (data.clarification) {
+    if (data.suggestions && data.suggestions.length > 0) {
+      // Show suggestions instead of form
+      addMessage({
+        id: msgId,
+        role: 'assistant',
+        content: '',
+        suggestions: data.suggestions,
+        timestamp: new Date(),
+      });
+      setPendingContent(content);
+      setPendingFormData(undefined);
+    } else if (data.clarification) {
       addMessage({
         id: msgId,
         role: 'assistant',
@@ -131,11 +143,20 @@ export const ChatPage: React.FC = () => {
     if (!pendingContent) return;
 
     updateMessage(messageId, { clarification: undefined });
-    
-    // 保存 formData 以便确认时使用
-    setPendingFormData(formData);
 
-    const data = await sendMessage(pendingContent, formData);
+    // Include selected suggestion ID for tracking
+    const payload = {
+      content: pendingContent,
+      formData: {
+        ...formData,
+        suggestionId: selectedSuggestion?.id,
+      },
+    };
+
+    // 保存 formData 以便确认时使用
+    setPendingFormData(payload.formData);
+
+    const data = await sendMessage(pendingContent, payload.formData);
 
     if (data.error) {
       updateMessage(messageId, {
@@ -156,6 +177,7 @@ export const ChatPage: React.FC = () => {
       });
       setPendingContent('');
       setPendingFormData(undefined);
+      setSelectedSuggestion(null);
     }
   };
 
@@ -192,6 +214,24 @@ export const ChatPage: React.FC = () => {
     });
     setPendingContent('');
     setPendingFormData(undefined);
+    setSelectedSuggestion(null);
+  };
+
+  const handleSuggestionSelect = (suggestion: Suggestion) => {
+    setSelectedSuggestion(suggestion);
+
+    // Auto-populate form fields from suggestion
+    const newFormData: Record<string, any> = {
+      name: suggestion.name,
+      namespace: suggestion.namespace,
+    };
+
+    setPendingFormData(newFormData);
+  };
+
+  const handleSuggestionNone = () => {
+    setSelectedSuggestion(null);
+    setPendingFormData({});
   };
 
   return (
@@ -212,6 +252,8 @@ export const ChatPage: React.FC = () => {
             onFormSubmit={handleFormSubmit}
             onActionConfirm={handleActionConfirm}
             onActionCancel={handleActionCancel}
+            onSuggestionSelect={handleSuggestionSelect}
+            onSuggestionNone={handleSuggestionNone}
           />
           <QuickActions actions={quickActions} onActionClick={handleSendMessage} />
           <ChatInput onSend={handleSendMessage} loading={loading} />

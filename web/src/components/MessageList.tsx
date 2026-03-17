@@ -1,13 +1,16 @@
 import React, { useEffect, useRef } from 'react';
-import { Message } from '../types';
+import { Message, Suggestion } from '../types';
 import { ActionForm } from './ActionForm';
 import { ActionPreview } from './ActionPreview';
+import { SuggestionCards } from './SuggestionCards';
 
 interface MessageListProps {
   messages: Message[];
   onFormSubmit?: (messageId: string, formData: Record<string, any>) => void;
   onActionConfirm?: (messageId: string) => void;
-  onActionCancel?: (messageId: string) => void
+  onActionCancel?: (messageId: string) => void;
+  onSuggestionSelect?: (suggestion: Suggestion) => void;
+  onSuggestionNone?: () => void;
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
@@ -15,6 +18,8 @@ export const MessageList: React.FC<MessageListProps> = ({
   onFormSubmit,
   onActionConfirm,
   onActionCancel,
+  onSuggestionSelect,
+  onSuggestionNone,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +70,17 @@ export const MessageList: React.FC<MessageListProps> = ({
                   clarification={msg.clarification}
                   onSubmit={(formData) => onFormSubmit?.(msg.id, formData)}
                   onCancel={() => onActionCancel?.(msg.id)}
+                />
+              </div>
+            )}
+
+            {/* Suggestion Cards */}
+            {msg.suggestions && (
+              <div className="mt-3 ml-0">
+                <SuggestionCards
+                  suggestions={msg.suggestions}
+                  onSelect={(suggestion) => onSuggestionSelect?.(suggestion)}
+                  onNone={() => onSuggestionNone?.()}
                 />
               </div>
             )}
