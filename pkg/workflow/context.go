@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const checkpointMaxHistoryEntries = 200
+
 // ConversationContext maintains conversation history and context.
 type ConversationContext struct {
 	ThreadID       string
@@ -202,7 +204,7 @@ func (m *ContextManager) saveToCheckpoint(threadID string) error {
 		return fmt.Errorf("context not found for thread %s", threadID)
 	}
 
-	// Ensure conversation_history table exists with auto-increment ID to prevent timestamp collisions
+	// Ensure conversation_history table exists with auto-increment ID to prevent timestamp collisions.
 	_, err := m.checkpointer.db.Exec(`
 		CREATE TABLE IF NOT EXISTS conversation_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,27 +219,60 @@ func (m *ContextManager) saveToCheckpoint(threadID string) error {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
 
-	// Save all entries
-	for _, entry := range ctx.History {
-		var actionJSON string
-		if entry.Action != nil {
-			// Serialize all 7 K8sAction fields using encoding/json
-			actionBytes, err := json.Marshal(entry.Action)
-			if err != nil {
-				log.Printf("ERROR: Failed to serialize action for thread %s: %v", threadID, err)
-				continue
-			}
+	// Add a unique index so retries/re-saves do not duplicate the same entry.
+	_, err = m.checkpointer.db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_history_unique_entry
+		ON conversation_history (thread_id, role, content, timestamp)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create unique index: %w", err)
+	}
+
+	if len(ctx.History) == 0 {
+		return nil
+	}
+
+	// Persist only the newest entry to avoid O(n^2) checkpoint writes.
+	entry := ctx.History[len(ctx.History)-1]
+	timestamp := entry.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+
+	var actionJSON string
+	if entry.Action != nil {
+		// Serialize all 7 K8sAction fields using encoding/json.
+		actionBytes, marshalErr := json.Marshal(entry.Action)
+		if marshalErr != nil {
+			log.Printf("ERROR: Failed to serialize action for thread %s: %v", threadID, marshalErr)
+		} else {
 			actionJSON = string(actionBytes)
 		}
+	}
 
-		_, err := m.checkpointer.db.Exec(`
-			INSERT INTO conversation_history
-			(thread_id, role, content, timestamp, action_json)
-			VALUES (?, ?, ?, ?, ?)
-		`, threadID, entry.Role, entry.Content, entry.Timestamp.Format(time.RFC3339), actionJSON)
-		if err != nil {
-			return fmt.Errorf("failed to save conversation entry for thread %s: %w", threadID, err)
-		}
+	_, err = m.checkpointer.db.Exec(`
+		INSERT OR IGNORE INTO conversation_history
+		(thread_id, role, content, timestamp, action_json)
+		VALUES (?, ?, ?, ?, ?)
+	`, threadID, entry.Role, entry.Content, timestamp.Format(time.RFC3339), actionJSON)
+	if err != nil {
+		return fmt.Errorf("failed to save conversation entry for thread %s: %w", threadID, err)
+	}
+
+	// Prune old entries for the thread, keeping only the most recent N rows.
+	_, err = m.checkpointer.db.Exec(`
+		DELETE FROM conversation_history
+		WHERE thread_id = ?
+		AND id NOT IN (
+			SELECT id
+			FROM conversation_history
+			WHERE thread_id = ?
+			ORDER BY timestamp DESC, id DESC
+			LIMIT ?
+		)
+	`, threadID, threadID, checkpointMaxHistoryEntries)
+	if err != nil {
+		return fmt.Errorf("failed to prune conversation history for thread %s: %w", threadID, err)
 	}
 
 	return nil
