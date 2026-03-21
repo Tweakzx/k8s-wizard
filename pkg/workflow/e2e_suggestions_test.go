@@ -35,7 +35,7 @@ func (m *MockK8sClient) GetPodLogs(ctx context.Context, namespace, pod, containe
 	return "", nil
 }
 
-func (m *MockK8sClient) ExecPod(ctx context.Context, namespace, pod, container, command string) (string, error) {
+func (m *MockK8sClient) ExecPod(ctx context.Context, namespace, pod, container string, command []string) (string, error) {
 	return "", nil
 }
 

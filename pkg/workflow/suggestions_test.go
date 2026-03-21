@@ -33,7 +33,7 @@ func (m *MockClient) GetPodLogs(ctx context.Context, namespace, pod, container s
 	return "", nil
 }
 
-func (m *MockClient) ExecPod(ctx context.Context, namespace, pod, container, command string) (string, error) {
+func (m *MockClient) ExecPod(ctx context.Context, namespace, pod, container string, command []string) (string, error) {
 	return "", nil
 }
 
