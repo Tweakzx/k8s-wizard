@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"os/signal"
 	"syscall"
 	"time"
@@ -48,8 +49,12 @@ func main() {
 
 	router := setupRouter(ag, authCfg)
 	srv := &http.Server{
-		Addr:    getBindAddr(cfg),
-		Handler: router,
+		Addr:              getBindAddr(cfg),
+		Handler:           router,
+		ReadHeaderTimeout: getServerTimeoutFromEnv("K8S_WIZARD_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
+		ReadTimeout:       getServerTimeoutFromEnv("K8S_WIZARD_HTTP_READ_TIMEOUT", 30*time.Second),
+		WriteTimeout:      getServerTimeoutFromEnv("K8S_WIZARD_HTTP_WRITE_TIMEOUT", 60*time.Second),
+		IdleTimeout:       getServerTimeoutFromEnv("K8S_WIZARD_HTTP_IDLE_TIMEOUT", 120*time.Second),
 	}
 
 	go startServer(srv)
@@ -170,4 +175,31 @@ func waitForShutdown(srv *http.Server) {
 	}
 
 	logger.Info("server exited")
+}
+
+func getServerTimeoutFromEnv(key string, fallback time.Duration) time.Duration {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return fallback
+	}
+
+	// Prefer standard duration values like "30s"; fallback to raw seconds for convenience.
+	if d, err := time.ParseDuration(value); err == nil {
+		if d > 0 {
+			return d
+		}
+		logger.Warn("invalid server timeout duration (must be > 0), using default", "env", key, "value", value, "default", fallback.String())
+		return fallback
+	}
+
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		logger.Warn("invalid server timeout seconds (must be > 0), using default", "env", key, "value", value, "default", fallback.String())
+		return fallback
+	}
+
+	logger.Warn("invalid server timeout format, using default", "env", key, "value", value, "default", fallback.String())
+	return fallback
 }
