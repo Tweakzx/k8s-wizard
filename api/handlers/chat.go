@@ -115,7 +115,7 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 	// 如果都成功，标记为已执行
 	if clarification == nil && actionPreview == nil {
 		resp.Status = "executed"
-		log.Printf("✅ 处理成功: %s", result)
+		log.Printf("✅ 处理成功: result=[REDACTED len=%d]", len(result))
 	}
 
 	c.JSON(http.StatusOK, resp)
