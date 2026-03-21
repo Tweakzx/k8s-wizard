@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavItem, QuickAction, Suggestion } from '../types';
+import { ChatResponse, NavItem, QuickAction, Suggestion } from '../types';
 import { Header } from '../components/Header';
 import { Sidebar } from '../components/Sidebar';
 import { MessageList } from '../components/MessageList';
@@ -7,6 +7,7 @@ import { QuickActions } from '../components/QuickActions';
 import { ChatInput } from '../components/ChatInput';
 import { useMessages } from '../hooks/useMessages';
 import { useConnectionStatus } from '../hooks/useConnectionStatus';
+import { api } from '../services/api';
 
 export const ChatPage: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -33,34 +34,21 @@ export const ChatPage: React.FC = () => {
     { label: '删除旧 Pod', command: '删除名为 old 的 pod' },
   ];
 
-  const sendMessage = async (content: string, formData?: Record<string, any>, confirm?: boolean) => {
+  const sendMessage = async (
+    content: string,
+    formData?: Record<string, any>,
+    confirm?: boolean
+  ): Promise<ChatResponse> => {
     setLoading(true);
     console.log('📤 发送请求:', { content, formData, confirm });
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, formData, confirm }),
-      });
-
-      // 检查响应状态
-      if (!response.ok) {
-        return { error: `服务器错误: ${response.status}` };
-      }
-
-      // 检查响应内容
-      const text = await response.text();
-      if (!text) {
-        return { error: '服务器返回空响应' };
-      }
-
-      const data = JSON.parse(text);
+      const data = await api.sendChat({ content, formData, confirm });
       console.log('📥 收到响应:', data);
       return data;
     } catch (error) {
       console.error('❌ 请求错误:', error);
-      return { error: error instanceof Error ? error.message : '网络错误，请检查后端服务' };
+      return { result: '', error: error instanceof Error ? error.message : '网络错误，请检查后端服务' };
     } finally {
       setLoading(false);
     }
