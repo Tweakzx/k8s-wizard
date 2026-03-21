@@ -110,13 +110,41 @@ func (h *ConfigHandler) SetModel(c *gin.Context) {
 		return
 	}
 
-	// 调用 Agent 切换模型
+	// 默认持久化模型切换结果
+	persist := true
+	if req.Persist != nil {
+		persist = *req.Persist
+	}
+
+	// 切换运行时模型（包含 client/graph 重建）
 	if err := h.agent.SetModel(req.Model); err != nil {
-		c.JSON(http.StatusBadRequest, models.SetModelResponse{
+		c.JSON(http.StatusInternalServerError, models.SetModelResponse{
 			Success: false,
-			Error:   err.Error(),
+			Error:   "模型切换失败: " + err.Error(),
 		})
 		return
+	}
+
+	if persist {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.SetModelResponse{
+				Success: false,
+				Model:   h.agent.GetModelName(),
+				Error:   "模型已切换，但加载配置失败: " + err.Error(),
+			})
+			return
+		}
+
+		cfg.Agents.Defaults.Model.Primary = req.Model
+		if err := cfg.Save(); err != nil {
+			c.JSON(http.StatusInternalServerError, models.SetModelResponse{
+				Success: false,
+				Model:   h.agent.GetModelName(),
+				Error:   "模型已切换，但保存配置失败: " + err.Error(),
+			})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, models.SetModelResponse{
