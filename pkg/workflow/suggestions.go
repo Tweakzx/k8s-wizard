@@ -11,6 +11,7 @@ import (
 	"k8s-wizard/api/models"
 	"k8s-wizard/pkg/k8s"
 	"k8s-wizard/pkg/logger"
+	appsv1 "k8s.io/api/apps/v1"
 )
 
 const suggestionCacheMaxSize = 256
@@ -49,8 +50,8 @@ func (e *SuggestionEngine) QueryCluster(ctx context.Context, req models.Suggesti
 		return cached, nil
 	}
 
-	// Query cluster resources
-	deployments, err := e.client.GetResources(ctx, req.Namespace, "deployment")
+	// Query structured deployment objects
+	deployments, err := e.client.ListDeployments(ctx, req.Namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query deployments: %w", err)
 	}
@@ -60,7 +61,7 @@ func (e *SuggestionEngine) QueryCluster(ctx context.Context, req models.Suggesti
 
 	// If name is specified, find matches
 	if req.Name != "" {
-		matches := findNameMatches(req.Name, deployments)
+		matches := findNameMatches(req, deployments.Items)
 		suggestions = append(suggestions, matches...)
 	} else {
 		// Name not specified, suggest "Specify name" option
@@ -176,49 +177,34 @@ func MakeSuggestionsNode(engine *SuggestionEngine) NodeFunc {
 	}
 }
 
-func findNameMatches(name string, deployments string) []models.Suggestion {
+func findNameMatches(req models.SuggestionRequest, deployments []appsv1.Deployment) []models.Suggestion {
 	var matches []models.Suggestion
 
-	// Parse deployment names from the formatted output
-	lines := strings.Split(deployments, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "•") {
-			// Extract deployment name from line format:
-			// "  • nginx-deployment (副本: 3/3)"
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				depName := strings.TrimPrefix(parts[1], "[default]")
-				depName = strings.TrimSpace(depName)
+	for _, dep := range deployments {
+		depName := dep.Name
 
-				// Calculate confidence based on match type
-				confidence := 0.0
-				isExisting := true
+		// Calculate confidence based on match type
+		confidence := 0.0
+		if depName == req.Name {
+			// Exact match
+			confidence = 1.0
+		} else if strings.Contains(strings.ToLower(depName), strings.ToLower(req.Name)) ||
+			strings.Contains(strings.ToLower(req.Name), strings.ToLower(depName)) {
+			// Partial match
+			confidence = 0.6
+		}
 
-				if depName == name {
-					// Exact match
-					confidence = 1.0
-				} else if strings.Contains(strings.ToLower(depName), strings.ToLower(name)) ||
-					strings.Contains(strings.ToLower(name), strings.ToLower(depName)) {
-					// Partial match
-					confidence = 0.6
-				} else {
-					// No match
-					isExisting = false
-				}
-
-				if confidence > 0 {
-					matches = append(matches, models.Suggestion{
-						Type:       "reuse",
-						Action:     "create",
-						Resource:   "deployment",
-						Name:       depName,
-						Namespace:  "default",
-						Reason:     fmt.Sprintf("Found existing deployment with similar name"),
-						Confidence: confidence,
-						Existing:   isExisting,
-					})
-				}
-			}
+		if confidence > 0 {
+			matches = append(matches, models.Suggestion{
+				Type:       "reuse",
+				Action:     req.Action,
+				Resource:   req.Resource,
+				Name:       depName,
+				Namespace:  dep.Namespace,
+				Reason:     "Found existing deployment with similar name",
+				Confidence: confidence,
+				Existing:   true,
+			})
 		}
 	}
 
@@ -226,11 +212,11 @@ func findNameMatches(name string, deployments string) []models.Suggestion {
 	if len(matches) == 0 {
 		matches = append(matches, models.Suggestion{
 			Type:       "create",
-			Action:     "create",
-			Resource:   "deployment",
-			Name:       name,
-			Namespace:  "default",
-			Reason:     fmt.Sprintf("Create new deployment named '%s'", name),
+			Action:     req.Action,
+			Resource:   req.Resource,
+			Name:       req.Name,
+			Namespace:  req.Namespace,
+			Reason:     fmt.Sprintf("Create new deployment named '%s'", req.Name),
 			Confidence: 1.0,
 			Existing:   false,
 		})

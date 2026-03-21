@@ -26,6 +26,9 @@ type Client interface {
 	// If namespace is empty, lists resources across all namespaces.
 	GetResources(ctx context.Context, namespace, resourceType string) (string, error)
 
+	// ListDeployments returns structured deployment objects for matching and routing logic.
+	ListDeployments(ctx context.Context, namespace string) (*appsv1.DeploymentList, error)
+
 	// ScaleDeployment scales a deployment to the specified number of replicas.
 	ScaleDeployment(ctx context.Context, namespace, name string, replicas int32) (string, error)
 
@@ -158,6 +161,15 @@ func (c *KubernetesClient) getDeployments(ctx context.Context, namespace string,
 		}
 	}
 	return result, nil
+}
+
+// ListDeployments returns structured deployment objects.
+func (c *KubernetesClient) ListDeployments(ctx context.Context, namespace string) (*appsv1.DeploymentList, error) {
+	deps, err := c.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get deployment list failed: %w", err)
+	}
+	return deps, nil
 }
 
 func (c *KubernetesClient) getServices(ctx context.Context, namespace string, allNamespaces bool) (string, error) {
