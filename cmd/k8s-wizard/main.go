@@ -39,7 +39,14 @@ func main() {
 
 	logger.Info("agent initialized", "model", ag.GetModelName())
 
-	router := setupRouter(ag)
+	authCfg := middleware.NewAuthConfigFromEnv()
+	logger.Info("auth configuration initialized",
+		"requireAuth", authCfg.RequireAuth,
+		"hasApiToken", authCfg.UserToken != "",
+		"hasAdminToken", authCfg.AdminToken != "",
+	)
+
+	router := setupRouter(ag, authCfg)
 	srv := &http.Server{
 		Addr:    getBindAddr(cfg),
 		Handler: router,
@@ -81,7 +88,7 @@ func getBindAddr(cfg *config.Config) string {
 	return ":" + port
 }
 
-func setupRouter(ag agent.AgentInterface) *gin.Engine {
+func setupRouter(ag agent.AgentInterface, authCfg middleware.AuthConfig) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.New()
@@ -92,9 +99,10 @@ func setupRouter(ag agent.AgentInterface) *gin.Engine {
 	r.GET("/health", handlers.HealthCheck)
 
 	api := r.Group("/api")
+	api.Use(middleware.TokenAuth(authCfg))
 	{
 		chatHandler := handlers.NewChatHandler(ag)
-		api.POST("/chat", chatHandler.Handle)
+		api.POST("/chat", middleware.RequireDangerousOperationAuth(), chatHandler.Handle)
 
 		resourcesHandler := handlers.NewResourcesHandler(ag)
 		api.GET("/resources", resourcesHandler.Handle)
