@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -20,9 +21,16 @@ const (
 	roleAnonymous      = "anonymous"
 	roleUser           = "user"
 	roleAdmin          = "admin"
+	maxChatBodyBytes   = 1 << 20 // 1MB
 )
 
-var dangerousVerbPattern = regexp.MustCompile(`(?i)\b(create|delete|scale)\b|创建|删除|扩容|缩容|伸缩`)
+var (
+	dangerousVerbPattern = regexp.MustCompile(`(?i)\b(create|delete|scale|apply|patch|restart|exec)\b|创建|删除|扩容|缩容|伸缩|应用|补丁|重启|执行`)
+	dangerousActionWords = []string{
+		"create", "delete", "scale", "apply", "patch", "restart", "exec",
+		"创建", "删除", "扩容", "缩容", "伸缩", "应用", "补丁", "重启", "执行",
+	}
+)
 
 // AuthConfig holds auth-related runtime configuration.
 type AuthConfig struct {
@@ -140,7 +148,18 @@ func tokenEquals(got, expected string) bool {
 // RequireDangerousOperationAuth restricts dangerous chat operations to admin role.
 func RequireDangerousOperationAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !isDangerousChatRequest(c) {
+		isDangerous, err := isDangerousChatRequest(c)
+		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large (max 1MB)"})
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		if !isDangerous {
 			c.Next()
 			return
 		}
@@ -161,27 +180,28 @@ func RequireDangerousOperationAuth() gin.HandlerFunc {
 	}
 }
 
-func isDangerousChatRequest(c *gin.Context) bool {
+func isDangerousChatRequest(c *gin.Context) (bool, error) {
 	if c.Request.Method != http.MethodPost {
-		return false
+		return false, nil
 	}
 
-	body, err := io.ReadAll(c.Request.Body)
+	limitedBody := http.MaxBytesReader(c.Writer, c.Request.Body, maxChatBodyBytes)
+	body, err := io.ReadAll(limitedBody)
 	if err != nil {
-		return false
+		return false, err
 	}
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 	if len(bytes.TrimSpace(body)) == 0 {
-		return false
+		return false, nil
 	}
 
 	var req models.ChatRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return false
+		return false, nil
 	}
 
 	if dangerousVerbPattern.MatchString(req.Content) {
-		return true
+		return true, nil
 	}
 
 	for k, v := range req.FormData {
@@ -189,12 +209,30 @@ func isDangerousChatRequest(c *gin.Context) bool {
 		if kl != "action" && kl != "type" && kl != "operation" && kl != "method" && kl != "tool" && kl != "tool_name" {
 			continue
 		}
-		if dangerousVerbPattern.MatchString(strings.TrimSpace(toString(v))) {
+		if isDangerousOperationValue(strings.TrimSpace(toString(v))) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func isDangerousOperationValue(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return false
+	}
+
+	// For parsed "action/type/operation/method/tool" style fields,
+	// prefer exact constant-time equality checks.
+	for _, word := range dangerousActionWords {
+		if tokenEquals(lower, strings.ToLower(word)) {
 			return true
 		}
 	}
 
-	return false
+	// Fallback to pattern matching for free-form text values.
+	return dangerousVerbPattern.MatchString(value)
 }
 
 func toString(v interface{}) string {

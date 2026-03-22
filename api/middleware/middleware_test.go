@@ -94,6 +94,95 @@ func TestRequireDangerousOperationAuth_AllowsAdmin(t *testing.T) {
 	}
 }
 
+func TestRequireDangerousOperationAuth_ForbidsNonAdminApply(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(TokenAuth(AuthConfig{RequireAuth: true, UserToken: "user-token", AdminToken: "admin-token"}))
+	router.Use(RequireDangerousOperationAuth())
+	router.POST("/chat", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"content":"apply deployment nginx"}`))
+	req.Header.Set("Authorization", "Bearer user-token")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestRequireDangerousOperationAuth_ForbidsNonAdminRestart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(TokenAuth(AuthConfig{RequireAuth: true, UserToken: "user-token", AdminToken: "admin-token"}))
+	router.Use(RequireDangerousOperationAuth())
+	router.POST("/chat", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"content":"restart pod nginx"}`))
+	req.Header.Set("Authorization", "Bearer user-token")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestRequireDangerousOperationAuth_ForbidsNonAdminExec(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(TokenAuth(AuthConfig{RequireAuth: true, UserToken: "user-token", AdminToken: "admin-token"}))
+	router.Use(RequireDangerousOperationAuth())
+	router.POST("/chat", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"content":"exec into pod nginx"}`))
+	req.Header.Set("Authorization", "Bearer user-token")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestRequireDangerousOperationAuth_RejectsLargeBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(TokenAuth(AuthConfig{RequireAuth: true, UserToken: "user-token", AdminToken: "admin-token"}))
+	router.Use(RequireDangerousOperationAuth())
+	router.POST("/chat", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	oversized := strings.Repeat("a", (1<<20)+8)
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"content":"`+oversized+`"}`))
+	req.Header.Set("Authorization", "Bearer user-token")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
 func TestCORS_AllowsConfiguredOriginAndHandlesPreflight(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
