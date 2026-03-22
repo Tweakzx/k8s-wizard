@@ -482,7 +482,7 @@ func TestExecPod(t *testing.T) {
 
 	// Note: fake client doesn't support exec, so this will fail
 	// The implementation should handle this gracefully
-	_, err := client.ExecPod(ctx, "test-ns", "test-pod", "echo test", "")
+	_, err := client.ExecPod(ctx, "test-ns", "test-pod", "", []string{"echo", "test"})
 	// We expect this to fail with fake client
 	if err == nil {
 		t.Error("expected error with fake client for exec")
@@ -495,7 +495,7 @@ func TestExecPod_NilConfig(t *testing.T) {
 	client := NewClient(fakeClient, nil)
 
 	// Test that ExecPod with nil config returns proper error
-	_, err := client.ExecPod(ctx, "test-ns", "test-pod", "test-container", "echo test")
+	_, err := client.ExecPod(ctx, "test-ns", "test-pod", "test-container", []string{"echo", "test"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "config is nil")
 }
@@ -510,7 +510,7 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 		namespace string
 		pod       string
 		container string
-		command   string
+		command   []string
 		wantErr   bool
 		errMsg    string
 	}{
@@ -519,7 +519,7 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 			namespace: "",
 			pod:       "test-pod",
 			container: "test-container",
-			command:   "echo test",
+			command:   []string{"echo", "test"},
 			wantErr:   true,
 			errMsg:    "namespace cannot be empty",
 		},
@@ -528,7 +528,7 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 			namespace: "test-ns",
 			pod:       "",
 			container: "test-container",
-			command:   "echo test",
+			command:   []string{"echo", "test"},
 			wantErr:   true,
 			errMsg:    "pod name cannot be empty",
 		},
@@ -537,7 +537,7 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 			namespace: "test-ns",
 			pod:       "test-pod",
 			container: "",
-			command:   "echo test",
+			command:   []string{"echo", "test"},
 			wantErr:   true,
 			errMsg:    "container cannot be empty",
 		},
@@ -546,9 +546,18 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 			namespace: "test-ns",
 			pod:       "test-pod",
 			container: "test-container",
-			command:   "",
+			command:   []string{},
 			wantErr:   true,
 			errMsg:    "command cannot be empty",
+		},
+		{
+			name:      "unsafe shell command",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			container: "test-container",
+			command:   []string{"sh", "-c", "echo ok; rm -rf /"},
+			wantErr:   true,
+			errMsg:    "unsafe shell command rejected",
 		},
 	}
 

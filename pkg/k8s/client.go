@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -34,7 +36,7 @@ type Client interface {
 	GetPodLogs(ctx context.Context, namespace, pod, container string, tailLines int64) (string, error)
 
 	// ExecPod executes a command in a pod's container.
-	ExecPod(ctx context.Context, namespace, pod, container, command string) (string, error)
+	ExecPod(ctx context.Context, namespace, pod, container string, command []string) (string, error)
 }
 
 // KubernetesClient implements Client using kubernetes.Interface.
@@ -296,8 +298,10 @@ func (c *KubernetesClient) GetPodLogs(ctx context.Context, namespace string, pod
 	return buf.String(), nil
 }
 
+var dangerousShellPattern = regexp.MustCompile(`[;&|` + "`" + `$<>]|\$\(|\r|\n`)
+
 // ExecPod executes a command in a pod.
-func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod string, container string, command string) (string, error) {
+func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod string, container string, command []string) (string, error) {
 	// Validate parameters
 	if namespace == "" {
 		return "", fmt.Errorf("namespace cannot be empty")
@@ -308,17 +312,25 @@ func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod st
 	if container == "" {
 		return "", fmt.Errorf("container cannot be empty")
 	}
-	if command == "" {
+	if len(command) == 0 {
 		return "", fmt.Errorf("command cannot be empty")
+	}
+	for i, arg := range command {
+		if strings.TrimSpace(arg) == "" {
+			return "", fmt.Errorf("command argument at index %d cannot be empty", i)
+		}
+		if strings.ContainsRune(arg, '\x00') {
+			return "", fmt.Errorf("command argument at index %d contains null byte", i)
+		}
+	}
+	if isShellCommand(command) && dangerousShellPattern.MatchString(command[2]) {
+		return "", fmt.Errorf("unsafe shell command rejected")
 	}
 
 	// Check config is available for SPDY executor
 	if c.config == nil {
 		return "", fmt.Errorf("client config is nil, cannot execute pod commands")
 	}
-
-	// Split command into args (simple shell -c wrapper)
-	args := []string{"sh", "-c", command}
 
 	// Build exec request
 	req := c.clientset.CoreV1().RESTClient().Post().
@@ -328,7 +340,7 @@ func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod st
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: container,
-			Command:   args,
+			Command:   command,
 			Stdin:     false,
 			Stdout:    true,
 			Stderr:    true,
@@ -355,4 +367,17 @@ func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod st
 	}
 
 	return buf.String(), nil
+}
+
+func isShellCommand(command []string) bool {
+	if len(command) < 3 {
+		return false
+	}
+
+	switch command[0] {
+	case "sh", "bash", "zsh", "dash", "ksh", "ash":
+		return command[1] == "-c"
+	default:
+		return false
+	}
 }
