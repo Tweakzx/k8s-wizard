@@ -30,7 +30,7 @@ func TestRouteAfterParse(t *testing.T) {
 			expected: "END",
 		},
 		{
-			name: "K8s operation with form data - merge_form",
+			name: "K8s operation with form data - show_suggestions",
 			state: AgentState{
 				Status:         StatusPending,
 				IsK8sOperation: true,
@@ -40,10 +40,10 @@ func TestRouteAfterParse(t *testing.T) {
 					Resource: "deployment",
 				},
 			},
-			expected: "merge_form",
+			expected: "show_suggestions",
 		},
 		{
-			name: "K8s operation without form data - merge_form",
+			name: "K8s operation without form data - show_suggestions",
 			state: AgentState{
 				Status:         StatusPending,
 				IsK8sOperation: true,
@@ -53,10 +53,10 @@ func TestRouteAfterParse(t *testing.T) {
 					Resource: "deployment",
 				},
 			},
-			expected: "merge_form",
+			expected: "show_suggestions",
 		},
 		{
-			name: "get action - merge_form",
+			name: "get action - show_suggestions",
 			state: AgentState{
 				Status:         StatusPending,
 				IsK8sOperation: true,
@@ -65,7 +65,7 @@ func TestRouteAfterParse(t *testing.T) {
 					Resource: "pod",
 				},
 			},
-			expected: "merge_form",
+			expected: "show_suggestions",
 		},
 		{
 			name: "K8s operation with suggestions - show_suggestions",

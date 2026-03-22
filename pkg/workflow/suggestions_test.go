@@ -5,10 +5,14 @@ import (
 	"testing"
 
 	"k8s-wizard/api/models"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // MockClient for testing
-type MockClient struct{}
+type MockClient struct {
+	deployments []appsv1.Deployment
+}
 
 func (m *MockClient) CreateDeployment(ctx context.Context, namespace, name, image string, replicas int32) (string, error) {
 	return "", nil
@@ -19,6 +23,26 @@ func (m *MockClient) GetResources(ctx context.Context, namespace, resourceType s
 	return `🚀 集群中的 Deployment (共 2 个):
   • nginx-deployment (副本: 3/3)
   • nginx-ingress (副本: 2/2)`, nil
+}
+
+func (m *MockClient) ListDeployments(ctx context.Context, namespace string) (*appsv1.DeploymentList, error) {
+	if len(m.deployments) == 0 {
+		m.deployments = []appsv1.Deployment{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nginx-deployment",
+					Namespace: "default",
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nginx-ingress",
+					Namespace: "default",
+				},
+			},
+		}
+	}
+	return &appsv1.DeploymentList{Items: m.deployments}, nil
 }
 
 func (m *MockClient) ScaleDeployment(ctx context.Context, namespace, name string, replicas int32) (string, error) {

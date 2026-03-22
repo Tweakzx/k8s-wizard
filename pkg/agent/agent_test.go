@@ -80,18 +80,35 @@ func TestGraphAgent_GetModel(t *testing.T) {
 }
 
 func TestGraphAgent_SetModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DEEPSEEK_API_KEY", "test-key")
+
 	agent, err := NewGraphAgent(nil, &mockLLMClient{}, "initial-model")
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
 
-	err = agent.SetModel("new-model")
+	err = agent.SetModel("deepseek/deepseek-chat")
 	if err != nil {
 		t.Fatalf("SetModel() error = %v", err)
 	}
 
-	if agent.GetModelName() != "new-model" {
-		t.Errorf("GetModelName() = %q, want %q", agent.GetModelName(), "new-model")
+	if agent.GetModelName() != "deepseek/deepseek-chat" {
+		t.Errorf("GetModelName() = %q, want %q", agent.GetModelName(), "deepseek/deepseek-chat")
+	}
+}
+
+func TestGraphAgent_SetModel_InvalidModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	agent, err := NewGraphAgent(nil, &mockLLMClient{}, "initial-model")
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	err = agent.SetModel("invalid-model")
+	if err == nil {
+		t.Fatal("expected SetModel() to fail for invalid model format")
 	}
 }
 
@@ -393,6 +410,9 @@ func TestGraphAgentWithCheckpointer_GetModel(t *testing.T) {
 }
 
 func TestGraphAgentWithCheckpointer_SetModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DEEPSEEK_API_KEY", "test-key")
+
 	checkpointer, err := workflow.NewCheckpointerManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create checkpointer: %v", err)
@@ -404,13 +424,13 @@ func TestGraphAgentWithCheckpointer_SetModel(t *testing.T) {
 		t.Fatalf("failed to create agent: %v", err)
 	}
 
-	err = agent.SetModel("new-model")
+	err = agent.SetModel("deepseek/deepseek-chat")
 	if err != nil {
 		t.Fatalf("SetModel() error = %v", err)
 	}
 
-	if agent.GetModelName() != "new-model" {
-		t.Errorf("GetModelName() = %q, want %q", agent.GetModelName(), "new-model")
+	if agent.GetModelName() != "deepseek/deepseek-chat" {
+		t.Errorf("GetModelName() = %q, want %q", agent.GetModelName(), "deepseek/deepseek-chat")
 	}
 }
 

@@ -6,22 +6,25 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
+const checkpointMaxHistoryEntries = 200
+
 // ConversationContext maintains conversation history and context.
 type ConversationContext struct {
-	ThreadID       string
-	History        []ConversationEntry
-	LastOperation  *K8sAction
-	LastResource   string
+	ThreadID      string
+	History       []ConversationEntry
+	LastOperation *K8sAction
+	LastResource  string
 	LastNamespace string
 	Timestamp     time.Time
 }
 
 // ConversationEntry represents a single conversation turn.
 type ConversationEntry struct {
-	Role      string    // "user" or "assistant"
+	Role      string // "user" or "assistant"
 	Content   string
 	Action    *K8sAction
 	Timestamp time.Time
@@ -29,24 +32,32 @@ type ConversationEntry struct {
 
 // ContextManager manages conversation contexts per thread.
 type ContextManager struct {
-	contexts    map[string]*ConversationContext
+	mu           sync.RWMutex
+	contexts     map[string]*ConversationContext
 	checkpointer *CheckpointerManager
 }
 
 // NewContextManager creates a context manager.
 func NewContextManager(checkpointer *CheckpointerManager) (*ContextManager, error) {
 	return &ContextManager{
-		contexts:    make(map[string]*ConversationContext),
+		contexts:     make(map[string]*ConversationContext),
 		checkpointer: checkpointer,
 	}, nil
 }
 
 // Get retrieves or creates a conversation context.
 func (m *ContextManager) Get(threadID string) *ConversationContext {
-	if ctx, exists := m.contexts[threadID]; exists {
-		// Update timestamp
-		ctx.Timestamp = time.Now()
-		return ctx
+	m.mu.RLock()
+	_, exists := m.contexts[threadID]
+	m.mu.RUnlock()
+	if exists {
+		m.mu.Lock()
+		if current, ok := m.contexts[threadID]; ok {
+			current.Timestamp = time.Now()
+			m.mu.Unlock()
+			return current
+		}
+		m.mu.Unlock()
 	}
 
 	// Try to load from checkpoint
@@ -58,14 +69,21 @@ func (m *ContextManager) Get(threadID string) *ConversationContext {
 		}
 	}
 
-	ctx := &ConversationContext{
+	newCtx := &ConversationContext{
 		ThreadID:  threadID,
 		History:   history,
 		Timestamp: time.Now(),
 	}
 
-	m.contexts[threadID] = ctx
-	return ctx
+	m.mu.Lock()
+	if existing, ok := m.contexts[threadID]; ok {
+		existing.Timestamp = time.Now()
+		m.mu.Unlock()
+		return existing
+	}
+	m.contexts[threadID] = newCtx
+	m.mu.Unlock()
+	return newCtx
 }
 
 // AddEntry adds an entry to conversation history.
@@ -79,6 +97,7 @@ func (m *ContextManager) AddEntry(threadID string, entry ConversationEntry) erro
 	}
 
 	ctx := m.Get(threadID)
+	m.mu.Lock()
 	ctx.History = append(ctx.History, entry)
 	ctx.Timestamp = time.Now()
 
@@ -88,6 +107,7 @@ func (m *ContextManager) AddEntry(threadID string, entry ConversationEntry) erro
 		ctx.LastResource = entry.Action.Resource
 		ctx.LastNamespace = entry.Action.Namespace
 	}
+	m.mu.Unlock()
 
 	// Persist to checkpoint if available
 	if m.checkpointer != nil {
@@ -102,12 +122,18 @@ func (m *ContextManager) AddEntry(threadID string, entry ConversationEntry) erro
 // GetContextString returns formatted context for LLM.
 func (m *ContextManager) GetContextString(threadID string, maxHistory int) string {
 	ctx := m.Get(threadID)
+	m.mu.RLock()
+	historyCopy := append([]ConversationEntry(nil), ctx.History...)
+	lastOperation := ctx.LastOperation
+	lastNamespace := ctx.LastNamespace
+	lastResource := ctx.LastResource
+	m.mu.RUnlock()
 
 	var sb strings.Builder
 	sb.WriteString("对话历史:\n")
 
 	// Get recent history
-	history := ctx.History
+	history := historyCopy
 	if len(history) > maxHistory {
 		history = history[len(history)-maxHistory:]
 	}
@@ -121,11 +147,11 @@ func (m *ContextManager) GetContextString(threadID string, maxHistory int) strin
 	}
 
 	// Add context from last operation
-	if ctx.LastOperation != nil {
+	if lastOperation != nil {
 		sb.WriteString(fmt.Sprintf("\n最近操作: %s %s/%s\n",
-			ctx.LastOperation.Action,
-			ctx.LastNamespace,
-			ctx.LastResource))
+			lastOperation.Action,
+			lastNamespace,
+			lastResource))
 	}
 
 	return sb.String()
@@ -134,13 +160,17 @@ func (m *ContextManager) GetContextString(threadID string, maxHistory int) strin
 // Clear removes conversation context from memory only.
 // The checkpoint data is preserved and can be reloaded via Get().
 func (m *ContextManager) Clear(threadID string) error {
+	m.mu.Lock()
 	delete(m.contexts, threadID)
+	m.mu.Unlock()
 	return nil
 }
 
 // HasContext checks if a context exists without creating one.
 func (m *ContextManager) HasContext(threadID string) bool {
+	m.mu.RLock()
 	_, exists := m.contexts[threadID]
+	m.mu.RUnlock()
 	return exists
 }
 
@@ -197,12 +227,21 @@ func (m *ContextManager) saveToCheckpoint(threadID string) error {
 		return nil
 	}
 
+	m.mu.RLock()
 	ctx := m.contexts[threadID]
 	if ctx == nil {
+		m.mu.RUnlock()
 		return fmt.Errorf("context not found for thread %s", threadID)
 	}
+	var entry ConversationEntry
+	hasEntry := false
+	if len(ctx.History) > 0 {
+		entry = ctx.History[len(ctx.History)-1]
+		hasEntry = true
+	}
+	m.mu.RUnlock()
 
-	// Ensure conversation_history table exists with auto-increment ID to prevent timestamp collisions
+	// Ensure conversation_history table exists with auto-increment ID to prevent timestamp collisions.
 	_, err := m.checkpointer.db.Exec(`
 		CREATE TABLE IF NOT EXISTS conversation_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,27 +256,59 @@ func (m *ContextManager) saveToCheckpoint(threadID string) error {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
 
-	// Save all entries
-	for _, entry := range ctx.History {
-		var actionJSON string
-		if entry.Action != nil {
-			// Serialize all 7 K8sAction fields using encoding/json
-			actionBytes, err := json.Marshal(entry.Action)
-			if err != nil {
-				log.Printf("ERROR: Failed to serialize action for thread %s: %v", threadID, err)
-				continue
-			}
+	// Add a unique index so retries/re-saves do not duplicate the same entry.
+	_, err = m.checkpointer.db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_history_unique_entry
+		ON conversation_history (thread_id, role, content, timestamp)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create unique index: %w", err)
+	}
+
+	if !hasEntry {
+		return nil
+	}
+
+	// Persist only the newest entry to avoid O(n^2) checkpoint writes.
+	timestamp := entry.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+
+	var actionJSON string
+	if entry.Action != nil {
+		// Serialize all 7 K8sAction fields using encoding/json.
+		actionBytes, marshalErr := json.Marshal(entry.Action)
+		if marshalErr != nil {
+			log.Printf("ERROR: Failed to serialize action for thread %s: %v", threadID, marshalErr)
+		} else {
 			actionJSON = string(actionBytes)
 		}
+	}
 
-		_, err := m.checkpointer.db.Exec(`
-			INSERT INTO conversation_history
-			(thread_id, role, content, timestamp, action_json)
-			VALUES (?, ?, ?, ?, ?)
-		`, threadID, entry.Role, entry.Content, entry.Timestamp.Format(time.RFC3339), actionJSON)
-		if err != nil {
-			return fmt.Errorf("failed to save conversation entry for thread %s: %w", threadID, err)
-		}
+	_, err = m.checkpointer.db.Exec(`
+		INSERT OR IGNORE INTO conversation_history
+		(thread_id, role, content, timestamp, action_json)
+		VALUES (?, ?, ?, ?, ?)
+	`, threadID, entry.Role, entry.Content, timestamp.Format(time.RFC3339), actionJSON)
+	if err != nil {
+		return fmt.Errorf("failed to save conversation entry for thread %s: %w", threadID, err)
+	}
+
+	// Prune old entries for the thread, keeping only the most recent N rows.
+	_, err = m.checkpointer.db.Exec(`
+		DELETE FROM conversation_history
+		WHERE thread_id = ?
+		AND id NOT IN (
+			SELECT id
+			FROM conversation_history
+			WHERE thread_id = ?
+			ORDER BY timestamp DESC, id DESC
+			LIMIT ?
+		)
+	`, threadID, threadID, checkpointMaxHistoryEntries)
+	if err != nil {
+		return fmt.Errorf("failed to prune conversation history for thread %s: %w", threadID, err)
 	}
 
 	return nil

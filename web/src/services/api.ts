@@ -44,11 +44,31 @@ export const api = {
     };
   },
 
+  // 发送聊天请求（支持表单补充与确认执行）
+  async sendChat(request: ChatRequest): Promise<ChatResponse> {
+    const response = await fetch(`${API_BASE}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorData = (await response.json()) as ChatResponse;
+      return { error: errorData.error || `服务器错误: ${response.status}`, result: '' };
+    }
+
+    return (await response.json()) as ChatResponse;
+  },
+
   // 获取资源
   async getResources(type: string = 'pod', namespace: string = 'default'): Promise<string> {
-    const response = await fetch(
-      `${API_BASE}/resources?type=${type}&namespace=${namespace}`
-    );
+    const params = new URLSearchParams({
+      type,
+      namespace,
+    });
+    const response = await fetch(`${API_BASE}/resources?${params.toString()}`);
 
     if (!response.ok) {
       const errorData = (await response.json()) as ChatResponse;

@@ -2,9 +2,12 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s-wizard/api/models"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // MockK8sClient simulates a Kubernetes client for testing
@@ -21,6 +24,34 @@ func (m *MockK8sClient) GetResources(ctx context.Context, namespace, resourceTyp
 		return m.deployments, nil
 	}
 	return "", nil
+}
+
+func (m *MockK8sClient) ListDeployments(ctx context.Context, namespace string) (*appsv1.DeploymentList, error) {
+	var items []appsv1.Deployment
+	lines := strings.Split(m.deployments, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "• ") {
+			continue
+		}
+
+		namePart := strings.TrimPrefix(line, "• ")
+		if idx := strings.Index(namePart, " ("); idx > 0 {
+			namePart = namePart[:idx]
+		}
+		namePart = strings.TrimSpace(namePart)
+		if namePart == "" {
+			continue
+		}
+
+		items = append(items, appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      namePart,
+				Namespace: namespace,
+			},
+		})
+	}
+	return &appsv1.DeploymentList{Items: items}, nil
 }
 
 func (m *MockK8sClient) ScaleDeployment(ctx context.Context, namespace, name string, replicas int32) (string, error) {

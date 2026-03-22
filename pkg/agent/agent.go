@@ -63,9 +63,9 @@ func NewGraphAgent(k8sClient k8s.Client, llmClient llm.Client, modelName string)
 		ModelName:    modelName,
 		ToolRegistry: tools.NewRegistry(),
 		// PromptLoader, SubGraphMgr, ContextMgr will be initialized in later phases
-		PromptLoader: nil,
-		SubGraphMgr:  nil,
-		ContextMgr:   nil,
+		PromptLoader:     nil,
+		SubGraphMgr:      nil,
+		ContextMgr:       nil,
 		SuggestionEngine: suggestionEngine,
 	}
 
@@ -91,6 +91,7 @@ func (a *GraphAgent) ProcessCommandWithClarification(
 ) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error) {
 	a.mu.RLock()
 	modelName := a.modelName
+	graph := a.graph
 	a.mu.RUnlock()
 
 	// Build initial state
@@ -103,7 +104,7 @@ func (a *GraphAgent) ProcessCommandWithClarification(
 	_ = modelName // modelName is currently unused but kept for future use
 
 	// Execute the graph
-	finalState, execErr := a.graph.Invoke(ctx, initialState)
+	finalState, execErr := graph.Invoke(ctx, initialState)
 	if execErr != nil {
 		return "", nil, nil, execErr
 	}
@@ -154,12 +155,52 @@ func (a *GraphAgent) ProcessCommandWithClarification(
 	}
 }
 
-// SetModel updates the model name.
-// Note: This is a simplified implementation that only updates the model name string.
-// For full model switching functionality, the graph and LLM client need to be recreated.
+// SetModel switches to a different model by re-creating the LLM client and graph.
 func (a *GraphAgent) SetModel(modelName string) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	provider, modelID, err := cfg.GetModelProvider(modelName)
+	if err != nil {
+		return fmt.Errorf("failed to parse model: %w", err)
+	}
+
+	providerCfg, ok := cfg.Models.Providers[provider]
+	if !ok {
+		return fmt.Errorf("provider not configured: %s", provider)
+	}
+
+	newLLM, err := llm.NewClient(provider, modelID, providerCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create LLM client: %w", err)
+	}
+
+	a.mu.RLock()
+	currentDeps := a.deps
+	a.mu.RUnlock()
+
+	newDeps := &workflow.Dependencies{
+		K8sClient:        currentDeps.K8sClient,
+		LLM:              newLLM,
+		ModelName:        modelName,
+		ToolRegistry:     currentDeps.ToolRegistry,
+		PromptLoader:     currentDeps.PromptLoader,
+		SubGraphMgr:      currentDeps.SubGraphMgr,
+		ContextMgr:       currentDeps.ContextMgr,
+		SuggestionEngine: currentDeps.SuggestionEngine,
+	}
+
+	newGraph, err := workflow.NewK8sWizardGraph(newDeps)
+	if err != nil {
+		return fmt.Errorf("failed to reinitialize workflow graph: %w", err)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.graph = newGraph
+	a.deps = newDeps
 	a.modelName = modelName
 	return nil
 }
@@ -219,9 +260,9 @@ func NewGraphAgentWithCheckpointer(k8sClient k8s.Client, llmClient llm.Client, m
 		ModelName:    modelName,
 		ToolRegistry: tools.NewRegistry(),
 		// PromptLoader, SubGraphMgr, ContextMgr will be initialized in later phases
-		PromptLoader: nil,
-		SubGraphMgr:  nil,
-		ContextMgr:   nil,
+		PromptLoader:     nil,
+		SubGraphMgr:      nil,
+		ContextMgr:       nil,
 		SuggestionEngine: suggestionEngine,
 	}
 
@@ -260,6 +301,7 @@ func (a *GraphAgentWithCheckpointer) ProcessCommandWithClarificationAndThread(
 ) (result string, clarification *models.ClarificationRequest, actionPreview *models.ActionPreview, err error) {
 	a.mu.RLock()
 	modelName := a.modelName
+	graph := a.graph
 	a.mu.RUnlock()
 
 	// Build initial state
@@ -278,9 +320,9 @@ func (a *GraphAgentWithCheckpointer) ProcessCommandWithClarificationAndThread(
 	if threadID != "" {
 		// Use thread-aware configuration
 		config := lgg.WithThreadID(threadID)
-		finalState, execErr = a.graph.InvokeWithConfig(ctx, initialState, config)
+		finalState, execErr = graph.InvokeWithConfig(ctx, initialState, config)
 	} else {
-		finalState, execErr = a.graph.Invoke(ctx, initialState)
+		finalState, execErr = graph.Invoke(ctx, initialState)
 	}
 
 	if execErr != nil {
@@ -327,10 +369,53 @@ func (a *GraphAgentWithCheckpointer) ProcessCommandWithClarificationAndThread(
 	}
 }
 
-// SetModel updates the model name.
+// SetModel switches to a different model by re-creating the LLM client and graph.
 func (a *GraphAgentWithCheckpointer) SetModel(modelName string) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	provider, modelID, err := cfg.GetModelProvider(modelName)
+	if err != nil {
+		return fmt.Errorf("failed to parse model: %w", err)
+	}
+
+	providerCfg, ok := cfg.Models.Providers[provider]
+	if !ok {
+		return fmt.Errorf("provider not configured: %s", provider)
+	}
+
+	newLLM, err := llm.NewClient(provider, modelID, providerCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create LLM client: %w", err)
+	}
+
+	a.mu.RLock()
+	currentDeps := a.deps
+	checkpointer := a.checkpointer
+	a.mu.RUnlock()
+
+	newDeps := &workflow.Dependencies{
+		K8sClient:        currentDeps.K8sClient,
+		LLM:              newLLM,
+		ModelName:        modelName,
+		ToolRegistry:     currentDeps.ToolRegistry,
+		PromptLoader:     currentDeps.PromptLoader,
+		SubGraphMgr:      currentDeps.SubGraphMgr,
+		ContextMgr:       currentDeps.ContextMgr,
+		SuggestionEngine: currentDeps.SuggestionEngine,
+	}
+
+	newGraph, err := workflow.NewK8sWizardGraphWithCheckpointer(newDeps, checkpointer.GetStore())
+	if err != nil {
+		return fmt.Errorf("failed to reinitialize workflow graph: %w", err)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.graph = newGraph
+	a.deps = newDeps
 	a.modelName = modelName
 	return nil
 }
