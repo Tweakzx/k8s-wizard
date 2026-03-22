@@ -559,6 +559,24 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 			wantErr:   true,
 			errMsg:    "unsafe shell command rejected",
 		},
+		{
+			name:      "unsafe bash -lc command",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			container: "test-container",
+			command:   []string{"bash", "-lc", "echo ok; rm -rf /"},
+			wantErr:   true,
+			errMsg:    "unsafe shell command rejected",
+		},
+		{
+			name:      "unsafe sh -ec command",
+			namespace: "test-ns",
+			pod:       "test-pod",
+			container: "test-container",
+			command:   []string{"sh", "-ec", "echo ok && id | cat"},
+			wantErr:   true,
+			errMsg:    "unsafe shell command rejected",
+		},
 	}
 
 	for _, tt := range tests {
@@ -570,6 +588,54 @@ func TestExecPod_ValidationErrors(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestIsShellCommand(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   []string
+		wantShell bool
+		wantIdx   int
+	}{
+		{
+			name:      "sh -c",
+			command:   []string{"sh", "-c", "echo ok"},
+			wantShell: true,
+			wantIdx:   2,
+		},
+		{
+			name:      "bash -lc",
+			command:   []string{"bash", "-lc", "echo ok"},
+			wantShell: true,
+			wantIdx:   2,
+		},
+		{
+			name:      "sh -ec",
+			command:   []string{"sh", "-ec", "echo ok"},
+			wantShell: true,
+			wantIdx:   2,
+		},
+		{
+			name:      "absolute shell path",
+			command:   []string{"/bin/bash", "-lc", "echo ok"},
+			wantShell: true,
+			wantIdx:   2,
+		},
+		{
+			name:      "non shell command",
+			command:   []string{"echo", "ok"},
+			wantShell: false,
+			wantIdx:   -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotShell, gotIdx := isShellCommand(tt.command)
+			assert.Equal(t, tt.wantShell, gotShell)
+			assert.Equal(t, tt.wantIdx, gotIdx)
 		})
 	}
 }

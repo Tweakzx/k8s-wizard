@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"k8s-wizard/api/models"
 	"k8s-wizard/pkg/agent"
@@ -118,7 +119,12 @@ func (h *ConfigHandler) SetModel(c *gin.Context) {
 
 	// 切换运行时模型（包含 client/graph 重建）
 	if err := h.agent.SetModel(req.Model); err != nil {
-		c.JSON(http.StatusInternalServerError, models.SetModelResponse{
+		status := http.StatusInternalServerError
+		if isInvalidModelError(err) {
+			status = http.StatusBadRequest
+		}
+
+		c.JSON(status, models.SetModelResponse{
 			Success: false,
 			Error:   "模型切换失败: " + err.Error(),
 		})
@@ -152,4 +158,24 @@ func (h *ConfigHandler) SetModel(c *gin.Context) {
 		Model:   h.agent.GetModelName(),
 		Message: "模型切换成功",
 	})
+}
+
+func isInvalidModelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	indicators := []string{
+		"failed to parse model",
+		"invalid model format",
+		"unknown provider",
+		"provider not configured",
+		"model not found",
+	}
+	for _, s := range indicators {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }

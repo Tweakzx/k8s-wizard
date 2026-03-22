@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -312,6 +313,16 @@ func (c *KubernetesClient) GetPodLogs(ctx context.Context, namespace string, pod
 
 var dangerousShellPattern = regexp.MustCompile(`[;&|` + "`" + `$<>]|\$\(|\r|\n`)
 
+var shellInterpreters = map[string]struct{}{
+	"sh":   {},
+	"bash": {},
+	"zsh":  {},
+	"dash": {},
+	"ksh":  {},
+	"ash":  {},
+	"fish": {},
+}
+
 // ExecPod executes a command in a pod.
 func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod string, container string, command []string) (string, error) {
 	// Validate parameters
@@ -335,7 +346,8 @@ func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod st
 			return "", fmt.Errorf("command argument at index %d contains null byte", i)
 		}
 	}
-	if isShellCommand(command) && dangerousShellPattern.MatchString(command[2]) {
+	if shellCmd, cmdIdx := isShellCommand(command); shellCmd && cmdIdx >= 0 &&
+		dangerousShellPattern.MatchString(command[cmdIdx]) {
 		return "", fmt.Errorf("unsafe shell command rejected")
 	}
 
@@ -381,15 +393,41 @@ func (c *KubernetesClient) ExecPod(ctx context.Context, namespace string, pod st
 	return buf.String(), nil
 }
 
-func isShellCommand(command []string) bool {
+func isShellCommand(command []string) (bool, int) {
 	if len(command) < 3 {
-		return false
+		return false, -1
 	}
 
-	switch command[0] {
-	case "sh", "bash", "zsh", "dash", "ksh", "ash":
-		return command[1] == "-c"
-	default:
-		return false
+	shellName := strings.TrimPrefix(filepath.Base(strings.TrimSpace(command[0])), "-")
+	if _, ok := shellInterpreters[shellName]; !ok {
+		return false, -1
 	}
+
+	for i := 1; i < len(command); i++ {
+		arg := command[i]
+		if arg == "--" {
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			break
+		}
+
+		// Direct -c form: sh -c "cmd"
+		if arg == "-c" {
+			if i+1 < len(command) {
+				return true, i + 1
+			}
+			return false, -1
+		}
+
+		// Combined short options: -lc / -ec / -cl
+		if !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "c") {
+			if i+1 < len(command) {
+				return true, i + 1
+			}
+			return false, -1
+		}
+	}
+
+	return false, -1
 }

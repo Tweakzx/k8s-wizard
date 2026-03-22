@@ -7,11 +7,37 @@ import type {
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL || '/api';
 
+const ENV_API_TOKEN =
+  (import.meta as any).env?.VITE_API_TOKEN ||
+  (import.meta as any).env?.VITE_AUTH_TOKEN ||
+  '';
+
+function resolveAuthToken(): string {
+  const runtimeToken =
+    (globalThis as any).__K8S_WIZARD_API_TOKEN__ ||
+    (globalThis as any).__APP_CONFIG__?.apiToken ||
+    '';
+  return runtimeToken || ENV_API_TOKEN;
+}
+
+function withAuthHeaders(headers: HeadersInit = {}): HeadersInit {
+  const merged = new Headers(headers);
+  if (!merged.has('Authorization')) {
+    const token = resolveAuthToken();
+    if (token) {
+      merged.set('Authorization', token.startsWith('Bearer ') ? token : `Bearer ${token}`);
+    }
+  }
+  return merged;
+}
+
 export const api = {
   // 健康检查
   async checkHealth(): Promise<boolean> {
     try {
-      const response = await fetch(`${API_BASE.replace('/api', '')}/health`);
+      const response = await fetch(`${API_BASE.replace('/api', '')}/health`, {
+        headers: withAuthHeaders(),
+      });
       const data = await response.json();
       return data.status === 'ok';
     } catch (error) {
@@ -26,9 +52,7 @@ export const api = {
 
     const response = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(request),
     });
 
@@ -48,9 +72,7 @@ export const api = {
   async sendChat(request: ChatRequest): Promise<ChatResponse> {
     const response = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(request),
     });
 
@@ -68,7 +90,9 @@ export const api = {
       type,
       namespace,
     });
-    const response = await fetch(`${API_BASE}/resources?${params.toString()}`);
+    const response = await fetch(`${API_BASE}/resources?${params.toString()}`, {
+      headers: withAuthHeaders(),
+    });
 
     if (!response.ok) {
       const errorData = (await response.json()) as ChatResponse;
@@ -81,7 +105,9 @@ export const api = {
 
   // 获取模型信息
   async getModelInfo(): Promise<ModelInfoResponse> {
-    const response = await fetch(`${API_BASE}/config/model`);
+    const response = await fetch(`${API_BASE}/config/model`, {
+      headers: withAuthHeaders(),
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: Failed to get model info`);
@@ -92,7 +118,9 @@ export const api = {
 
   // 获取完整配置
   async getConfig(): Promise<ConfigResponse> {
-    const response = await fetch(`${API_BASE}/config`);
+    const response = await fetch(`${API_BASE}/config`, {
+      headers: withAuthHeaders(),
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: Failed to get config`);
@@ -105,9 +133,7 @@ export const api = {
   async setModel(model: string): Promise<{ success: boolean; model: string; message?: string }> {
     const response = await fetch(`${API_BASE}/config/model`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ model }),
     });
 
